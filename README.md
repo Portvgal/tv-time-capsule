@@ -8,17 +8,18 @@ does not upload your TV Time export.
 
 ## Get Your TV Time GDPR Data
 
-Before using TV Time Capsule, request and download your TV Time data export.
+Before using TV Time Capsule, request and download your TV Time data export from
+TV Time's GDPR self-service page:
 
-1. Open TV Time while your account is still available.
-2. Go to the account, settings, help, privacy, or support area.
-3. Look for an option such as **Download my data**, **Export my data**,
-   **Privacy request**, **GDPR request**, or **Request my personal data**.
-4. If there is no self-service button, contact TV Time support and ask for a
-   GDPR/data export of your account.
-5. Wait for TV Time to prepare the export. They may email you a download link or
-   make the ZIP available in the app/account area.
-6. Download the ZIP file and keep it somewhere safe.
+[https://gdpr.tvtime.com/gdpr/self-service](https://gdpr.tvtime.com/gdpr/self-service)
+
+1. Open the TV Time GDPR Data Export page.
+2. Sign in with your TV Time email and password.
+3. If you do not know your password, use the reset-password option on that page.
+4. Request your personal data export.
+5. Wait for TV Time to prepare the export.
+6. Download the GDPR ZIP file when it is available.
+7. Keep the ZIP file somewhere safe.
 
 Do not unzip or edit the export before using TV Time Capsule. The app expects the
 original `.zip` file.
