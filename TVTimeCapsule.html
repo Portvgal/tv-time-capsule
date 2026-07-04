@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TV Time Capsule</title>
+    <meta name="description" content="Preserve and browse your TV Time GDPR export locally.">
+    <link rel="icon" type="image/png" href="app/assets/tvtimecapsule.png">
+    <link rel="apple-touch-icon" href="app/assets/tvtimecapsule.png">
+    <link rel="stylesheet" href="app/css/styles.css">
+  </head>
+  <body class="is-empty">
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="#" data-route="dashboard" aria-label="TV Time Capsule home">
+          <span class="brand-mark"><img src="app/assets/tvtimecapsule.png" alt="" aria-hidden="true"></span>
+          <span>
+            <strong>TV Time Capsule</strong>
+            <small>Local archive viewer</small>
+          </span>
+        </a>
+        <nav class="tabs" aria-label="Primary">
+          <button class="tab is-active" data-route="dashboard">Dashboard</button>
+          <button class="tab" data-route="history">History</button>
+          <button class="tab" data-route="settings">Settings</button>
+        </nav>
+      </header>
+
+      <main>
+        <section id="emptyState" class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">Private by design</p>
+            <h1>Preserve your TV Time watch history.</h1>
+            <p>
+              Choose your TV Time GDPR zip once. TV Time Capsule builds a private
+              local library in this browser and opens it automatically next time.
+            </p>
+            <div class="actions">
+              <label class="button primary">
+                <input id="zipInput" type="file" accept=".zip,application/zip" hidden>
+                Choose GDPR ZIP
+              </label>
+              <button id="exportHelpButton" class="button" type="button">How to get your ZIP</button>
+              <button id="loadRememberedButton" class="button" type="button" hidden>Open saved library</button>
+            </div>
+          </div>
+          <div class="hero-panel">
+            <div class="privacy-list">
+              <strong>Skipped automatically</strong>
+              <span>Tokens and login data</span>
+              <span>IP addresses</span>
+              <span>Device and ad identifiers</span>
+              <span>Private social identity files</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="statusPanel" class="status-panel" hidden>
+          <div>
+            <strong id="statusTitle">Importing</strong>
+            <p id="statusText">Preparing your archive...</p>
+          </div>
+          <progress id="statusProgress" value="0" max="100"></progress>
+        </section>
+
+        <section id="appView" hidden>
+          <div class="toolbar">
+            <div>
+              <p class="eyebrow">Dashboard</p>
+              <h2 id="archiveTitle">Your TV Time Capsule</h2>
+            </div>
+            <div class="toolbar-actions">
+              <input id="searchInput" class="search" type="search" placeholder="Search shows and movies">
+            </div>
+          </div>
+
+          <section id="dashboardView" class="route-view"></section>
+          <section id="historyView" class="route-view" hidden></section>
+          <section id="settingsView" class="route-view" hidden></section>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <span>TV Time will be missed. TV Time Capsule is an independent local archive viewer.</span>
+        <a href="https://github.com/Portvgal/tv-time-capsule" target="_blank" rel="noreferrer" aria-label="Open TV Time Capsule on GitHub">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 .5a12 12 0 0 0-3.8 23.38c.6.1.82-.26.82-.58v-2.04c-3.34.72-4.04-1.42-4.04-1.42-.54-1.38-1.32-1.74-1.32-1.74-1.08-.74.08-.72.08-.72 1.2.08 1.84 1.24 1.84 1.24 1.06 1.82 2.8 1.3 3.48 1 .1-.78.42-1.3.76-1.6-2.66-.3-5.46-1.34-5.46-5.94 0-1.32.46-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1-.32 3.3 1.22a11.4 11.4 0 0 1 6 0C17.72 4.66 18.72 5 18.72 5c.66 1.66.24 2.88.12 3.18.78.84 1.24 1.9 1.24 3.22 0 4.62-2.8 5.62-5.48 5.92.44.38.82 1.1.82 2.22v3.28c0 .32.22.68.82.56A12 12 0 0 0 12 .5Z"></path>
+          </svg>
+          <span>Portvgal/tv-time-capsule</span>
+        </a>
+      </footer>
+    </div>
+
+    <dialog id="historyDialog" class="modal">
+      <div class="modal-card">
+        <div id="historyDialogContent"></div>
+      </div>
+    </dialog>
+
+    <dialog id="exportHelpDialog" class="modal">
+      <div class="modal-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Before importing</p>
+            <h2>Get your TV Time GDPR ZIP</h2>
+            <p>Use TV Time's self-service export before opening the file here.</p>
+          </div>
+          <button class="icon-button" type="button" aria-label="Close" data-close-export-help>&times;</button>
+        </div>
+        <div class="help-body">
+          <ol class="help-steps">
+            <li>
+              <div>
+                <strong>Open the TV Time export page</strong>
+                <span>Go to the GDPR self-service page and sign in with the same TV Time account you used in the app.</span>
+              </div>
+              <a class="button primary" href="https://gdpr.tvtime.com/gdpr/self-service" target="_blank" rel="noreferrer">Open export</a>
+            </li>
+            <li>
+              <div>
+                <strong>Request your personal data</strong>
+                <span>Follow the on-screen flow to ask TV Time to prepare your export. If you used Google, Facebook, or a different email before, make sure you pick the account with your actual watch history.</span>
+              </div>
+            </li>
+            <li>
+              <div>
+                <strong>Wait, then download the ZIP</strong>
+                <span>Small accounts may be quick. Long-term or heavy TV Time users should be patient: preparing the file can take 30 minutes or more. Keep the page available and check back until the download is ready.</span>
+              </div>
+            </li>
+          </ol>
+          <div class="notice">
+            Download the ZIP somewhere safe. TV Time Capsule reads it locally in this browser and skips sensitive account/device files.
+          </div>
+        </div>
+      </div>
+    </dialog>
+
+    <template id="posterTemplate">
+      <article class="poster-card">
+        <div class="poster-art"></div>
+        <div class="poster-body">
+          <h3></h3>
+          <p></p>
+        </div>
+      </article>
+    </template>
+
+    <script src="app/vendor/jszip.min.js"></script>
+    <script src="app/vendor/papaparse.min.js"></script>
+    <script src="app/js/app.js"></script>
+  </body>
+</html>
