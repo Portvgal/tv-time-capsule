@@ -6,6 +6,8 @@ Open the app in your browser, choose your TV Time GDPR ZIP, and browse your
 shows, movies, watch history, posters, and watch-later items locally. The app
 does not upload your TV Time export.
 
+![TV Time Capsule history view](app/assets/screenshot-history.png)
+
 ## Get Your TV Time GDPR Data
 
 Before using TV Time Capsule, request and download your TV Time data export from
