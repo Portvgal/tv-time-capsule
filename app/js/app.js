@@ -1,12 +1,47 @@
 (function () {
   "use strict";
 
-  const ARCHIVE_SCHEMA_VERSION = 2;
+  const ARCHIVE_SCHEMA_VERSION = 3;
   const DB_NAME = "tv-time-capsule";
   const DB_STORE = "archives";
   const REMEMBERED_KEY = "remembered";
   const TMDB_KEY_STORAGE = "tv-time-capsule-tmdb-key";
   const MOVIE_REFRESH_BATCH_SIZE = 12;
+  const SEARCH_DEBOUNCE_MS = 120;
+  const REACTION_LABELS = {
+    1: "Touched",
+    2: "Confused",
+    3: "Sad",
+    6: "Amused",
+    7: "Bored",
+    8: "Frustrated",
+    28: "Shocked",
+    29: "Frustrated",
+    30: "Sad",
+    31: "Reflective",
+    32: "Touched",
+    33: "Amused",
+    34: "Scared",
+    35: "Bored",
+    36: "Understood",
+    37: "Thrilled",
+    38: "Confused",
+    39: "Tense"
+  };
+  const REACTION_EMOJIS = {
+    Shocked: "😵",
+    Frustrated: "😤",
+    Sad: "😭",
+    Reflective: "🤔",
+    Touched: "🥺",
+    Amused: "😆",
+    Scared: "😱",
+    Bored: "😑",
+    Understood: "☺️",
+    Thrilled: "🤩",
+    Confused: "🙃",
+    Tense: "😬"
+  };
 
   const SAFE_IMPORT_FILES = new Set([
     "tracking-prod-records.csv",
@@ -20,7 +55,14 @@
     "seen_episode_latest.csv",
     "seen_episode_source.csv",
     "show_addiction_score.csv",
-    "user_show_special_status.csv"
+    "user_show_special_status.csv",
+    "episode_comment.csv",
+    "show_comment.csv",
+    "comments-prod-comments.csv",
+    "emotions-3-prod-episode_votes.csv",
+    "emotions-live-votes.csv",
+    "episode_emotion.csv",
+    "tv_show_user_emotion_count.csv"
   ]);
 
   const SENSITIVE_FILES = new Set([
@@ -50,11 +92,16 @@
     query: "",
     dashboardKind: "shows",
     dashboardLetter: "all",
+    historyMode: "watched",
     historyKind: "all",
     historyRange: "all",
     historyStart: "",
     historyEnd: "",
-    selectedHistoryTitle: ""
+    selectedHistoryTitle: "",
+    settingsConfirmDelete: false,
+    refreshInProgress: false,
+    dialogReturnFocus: null,
+    searchTimer: null
   };
 
   const els = {
@@ -85,8 +132,13 @@
   function init() {
     els.zipInput.addEventListener("change", handleZipInput);
     els.searchInput.addEventListener("input", function (event) {
-      state.query = event.target.value.trim().toLowerCase();
-      render();
+      clearTimeout(state.searchTimer);
+      const value = event.target.value.trim().toLowerCase();
+      state.searchTimer = setTimeout(function () {
+        state.query = value;
+        resetVisibleCounts();
+        render();
+      }, SEARCH_DEBOUNCE_MS);
     });
     els.loadRememberedButton.addEventListener("click", loadRememberedArchive);
     els.exportHelpButton.addEventListener("click", openExportHelpDialog);
@@ -97,6 +149,12 @@
     els.historyDialog.addEventListener("click", function (event) {
       if (event.target === els.historyDialog) closeHistoryDialog();
     });
+    els.historyDialog.addEventListener("close", restoreDialogFocus);
+    els.exportHelpDialog.addEventListener("close", restoreDialogFocus);
+    els.appView.addEventListener("click", handleAppClick);
+    els.appView.addEventListener("change", handleAppChange);
+    els.historyDialogContent.addEventListener("click", handleHistoryDialogClick);
+    els.historyDialogContent.addEventListener("keydown", handleHistoryDialogKeydown);
     document.querySelectorAll("[data-route]").forEach(function (node) {
       node.addEventListener("click", function (event) {
         event.preventDefault();
@@ -109,6 +167,121 @@
     });
   }
 
+  function resetVisibleCounts() {
+  }
+
+  function handleAppClick(event) {
+    const button = event.target.closest("button");
+    if (!button || !els.appView.contains(button)) return;
+
+    if (button.dataset.dashboardKind) {
+      state.dashboardKind = button.dataset.dashboardKind;
+      state.dashboardLetter = "all";
+      renderDashboard();
+      return;
+    }
+    if (button.dataset.dashboardLetter) {
+      state.dashboardLetter = button.dataset.dashboardLetter;
+      renderDashboard();
+      return;
+    }
+    if (button.id === "refreshPostersButton") {
+      refreshPosterMetadata({ force: false });
+      return;
+    }
+    if (button.dataset.historyMode) {
+      state.historyMode = button.dataset.historyMode;
+      state.selectedHistoryTitle = "";
+      renderHistory();
+      return;
+    }
+    if (button.dataset.historyKind) {
+      state.historyKind = button.dataset.historyKind;
+      state.selectedHistoryTitle = "";
+      renderHistory();
+      return;
+    }
+    if (button.dataset.historyRange) {
+      state.historyRange = button.dataset.historyRange;
+      state.selectedHistoryTitle = "";
+      renderHistory();
+      return;
+    }
+    if (button.dataset.historyTitle) {
+      state.selectedHistoryTitle = button.dataset.historyKey;
+      openHistoryDialog(state.selectedHistoryTitle);
+      return;
+    }
+    if (button.dataset.watchlistKey) {
+      openWatchListDialog(button.dataset.watchlistKey);
+      return;
+    }
+    if (button.id === "forgetArchive") {
+      state.settingsConfirmDelete = true;
+      renderSettings();
+      return;
+    }
+    if (button.id === "cancelForgetArchive") {
+      state.settingsConfirmDelete = false;
+      renderSettings();
+      return;
+    }
+    if (button.id === "confirmForgetArchive") {
+      deleteLocalLibrary();
+      return;
+    }
+    if (button.id === "saveTmdbKey") {
+      saveTmdbKey();
+      return;
+    }
+    if (button.id === "refreshAllPosters") {
+      refreshPosterMetadata({ force: true });
+      return;
+    }
+    if (button.dataset.reviewSearch) {
+      reviewPosterMatch(button);
+    }
+  }
+
+  function handleAppChange(event) {
+    if (event.target.id === "historyStart") {
+      state.historyStart = event.target.value;
+      state.selectedHistoryTitle = "";
+      renderHistory();
+    }
+    if (event.target.id === "historyEnd") {
+      state.historyEnd = event.target.value;
+      state.selectedHistoryTitle = "";
+      renderHistory();
+    }
+  }
+
+  function handleHistoryDialogClick(event) {
+    const close = event.target.closest("[data-close-history]");
+    if (close) {
+      closeHistoryDialog();
+      return;
+    }
+    const tab = event.target.closest("[data-modal-tab]");
+    if (tab) activateModalTab(tab);
+  }
+
+  function handleHistoryDialogKeydown(event) {
+    const tab = event.target.closest("[data-modal-tab]");
+    if (!tab || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    const tabs = Array.from(els.historyDialogContent.querySelectorAll("[data-modal-tab]"));
+    const index = tabs.indexOf(tab);
+    if (index < 0) return;
+    event.preventDefault();
+    let nextIndex = index;
+    if (event.key === "ArrowLeft") nextIndex = index <= 0 ? tabs.length - 1 : index - 1;
+    if (event.key === "ArrowRight") nextIndex = index >= tabs.length - 1 ? 0 : index + 1;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = tabs.length - 1;
+    tabs[nextIndex].focus();
+    activateModalTab(tabs[nextIndex]);
+  }
+
   async function handleZipInput(event) {
     const file = event.target.files && event.target.files[0];
     event.target.value = "";
@@ -118,6 +291,7 @@
       showStatus("Reading ZIP", "Opening your TV Time GDPR export...", 2);
       const archive = await importGdprZip(file);
       state.archive = archive;
+      showStatus("Saving local library", "Storing the cleaned archive in this browser...", 96);
       await rememberArchiveBestEffort(archive);
       showApp();
       setRoute("dashboard");
@@ -220,6 +394,8 @@
     const shows = new Map();
     const movies = new Map();
     const watchHistory = [];
+    const comments = [];
+    const reactions = [];
     const badges = [];
     const stats = {};
     const historyKeys = new Set();
@@ -312,6 +488,13 @@
     addLatestRows(parsed["show_seen_episode_latest.csv"] || []);
     addLatestRows(parsed["seen_episode_latest.csv"] || []);
     addLatestRows(parsed["seen_episode_source.csv"] || []);
+    addOldEpisodeComments(parsed["episode_comment.csv"] || []);
+    addOldShowComments(parsed["show_comment.csv"] || []);
+    addNewComments(parsed["comments-prod-comments.csv"] || []);
+    addEpisodeReactions(parsed["emotions-3-prod-episode_votes.csv"] || [], "emotions-3-prod-episode_votes.csv");
+    addMovieReactions(parsed["emotions-live-votes.csv"] || [], "emotions-live-votes.csv");
+    addLegacyEpisodeEmotions(parsed["episode_emotion.csv"] || []);
+    addShowEmotionCounts(parsed["tv_show_user_emotion_count.csv"] || []);
 
     (parsed["user_badge.csv"] || []).forEach(function (row) {
       badges.push({
@@ -410,6 +593,195 @@
       });
     }
 
+    function addOldEpisodeComments(rows) {
+      rows.forEach(function (row) {
+        const show = ensureShow(row, "tv_show_name");
+        const text = clean(row.comment);
+        if (!show || !text) return;
+        comments.push({
+          id: clean(row.id) || `episode-comment:${comments.length}`,
+          type: "episode",
+          showTitle: show.title,
+          movieTitle: "",
+          title: show.title,
+          showId: show.id,
+          movieId: null,
+          episodeId: clean(row.episode_id),
+          seasonNumber: clean(row.episode_season_number),
+          episodeNumber: clean(row.episode_number),
+          text,
+          createdAt: clean(row.created_at),
+          updatedAt: clean(row.updated_at),
+          likeCount: number(row.nb_likes),
+          isSpoiler: number(row.spoiler_count) > 0,
+          sourceFile: "episode_comment.csv"
+        });
+        show.commentCount += 1;
+      });
+    }
+
+    function addOldShowComments(rows) {
+      rows.forEach(function (row) {
+        const show = ensureShow(row, "tv_show_name");
+        const text = clean(row.comment);
+        if (!show || !text) return;
+        comments.push({
+          id: clean(row.id) || `show-comment:${comments.length}`,
+          type: "show",
+          showTitle: show.title,
+          movieTitle: "",
+          title: show.title,
+          showId: show.id,
+          movieId: null,
+          episodeId: "",
+          seasonNumber: "",
+          episodeNumber: "",
+          text,
+          createdAt: clean(row.created_at),
+          updatedAt: clean(row.updated_at),
+          likeCount: number(row.nb_likes),
+          isSpoiler: number(row.spoiler_count) > 0,
+          sourceFile: "show_comment.csv"
+        });
+        show.commentCount += 1;
+      });
+    }
+
+    function addNewComments(rows) {
+      rows.forEach(function (row) {
+        const text = clean(row.text);
+        if (!text) return;
+        const commentType = clean(row.type).toLowerCase();
+        if (commentType === "like") return;
+        const movie = ensureMovie(row);
+        const show = movie ? null : ensureShow(row, "series_name");
+        if (!movie && !show) return;
+        const entityType = clean(row.entity_type).toLowerCase();
+        const type = movie ? "movie" : entityType === "episode" ? "episode" : "show";
+        comments.push({
+          id: clean(row.uuid || row.comment_uuid || row.comment_id) || `comments-prod:${comments.length}`,
+          type,
+          showTitle: show ? show.title : "",
+          movieTitle: movie ? movie.title : "",
+          title: movie ? movie.title : show.title,
+          showId: show ? show.id : null,
+          movieId: movie ? movie.id : null,
+          episodeId: clean(row.comment_id),
+          seasonNumber: "",
+          episodeNumber: "",
+          text,
+          createdAt: clean(row.created_at),
+          updatedAt: clean(row.updated_at),
+          likeCount: number(row.like_count),
+          isSpoiler: truthy(row.is_spoiler) || number(row.spoiler_count) > 0,
+          sourceFile: "comments-prod-comments.csv"
+        });
+        if (movie) movie.commentCount += 1;
+        if (show) show.commentCount += 1;
+      });
+    }
+
+    function addEpisodeReactions(rows, sourceFile) {
+      rows.forEach(function (row) {
+        const show = ensureShow(row, "series_name");
+        const reactionId = parseVoteValue(row.vote_key);
+        if (!show || !reactionId) return;
+        reactions.push({
+          id: clean(row.vote_key) || `${sourceFile}:${reactions.length}`,
+          type: "episode",
+          showTitle: show.title,
+          movieTitle: "",
+          title: show.title,
+          showId: show.id,
+          movieId: null,
+          episodeId: clean(row.episode_id),
+          seasonNumber: clean(row.season_number),
+          episodeNumber: clean(row.episode_number),
+          reactionId,
+          count: 1,
+          createdAt: "",
+          sourceFile
+        });
+        show.reactionCount += 1;
+      });
+    }
+
+    function addMovieReactions(rows, sourceFile) {
+      rows.forEach(function (row) {
+        const movie = ensureMovie(row);
+        const reactionId = parseVoteValue(row.vote_key);
+        if (!movie || !reactionId) return;
+        reactions.push({
+          id: clean(row.vote_key || row.uuid) || `${sourceFile}:${reactions.length}`,
+          type: "movie",
+          showTitle: "",
+          movieTitle: movie.title,
+          title: movie.title,
+          showId: null,
+          movieId: movie.id,
+          episodeId: "",
+          seasonNumber: "",
+          episodeNumber: "",
+          reactionId,
+          count: 1,
+          createdAt: "",
+          sourceFile
+        });
+        movie.reactionCount += 1;
+      });
+    }
+
+    function addLegacyEpisodeEmotions(rows) {
+      rows.forEach(function (row) {
+        const show = ensureShow(row, "tv_show_name");
+        const reactionId = clean(row.emotion_id);
+        if (!show || !reactionId) return;
+        reactions.push({
+          id: `episode-emotion:${clean(row.episode_id)}:${reactionId}:${clean(row.created_at)}`,
+          type: "episode",
+          showTitle: show.title,
+          movieTitle: "",
+          title: show.title,
+          showId: show.id,
+          movieId: null,
+          episodeId: clean(row.episode_id),
+          seasonNumber: clean(row.episode_season_number),
+          episodeNumber: clean(row.episode_number),
+          reactionId,
+          count: 1,
+          createdAt: clean(row.created_at),
+          sourceFile: "episode_emotion.csv"
+        });
+        show.reactionCount += 1;
+      });
+    }
+
+    function addShowEmotionCounts(rows) {
+      rows.forEach(function (row) {
+        const show = ensureShow(row, "tv_show_name");
+        const reactionId = clean(row.emotion_id);
+        const count = number(row.count) || 1;
+        if (!show || !reactionId) return;
+        reactions.push({
+          id: `show-emotion:${show.id}:${reactionId}`,
+          type: "show",
+          showTitle: show.title,
+          movieTitle: "",
+          title: show.title,
+          showId: show.id,
+          movieId: null,
+          episodeId: "",
+          seasonNumber: "",
+          episodeNumber: "",
+          reactionId,
+          count,
+          createdAt: clean(row.created_at),
+          sourceFile: "tv_show_user_emotion_count.csv"
+        });
+        show.reactionCount += count;
+      });
+    }
+
     const sortedHistory = watchHistory.sort(function (a, b) {
       return String(b.watchedAt || "").localeCompare(String(a.watchedAt || ""));
     });
@@ -419,8 +791,8 @@
       movies: Array.from(movies.values()).sort(sortByTitle),
       watchHistory: sortedHistory,
       ratings: [],
-      reactions: [],
-      comments: [],
+      reactions: reactions.sort(sortMemoryItems),
+      comments: comments.sort(sortMemoryItems),
       badges,
       stats
     };
@@ -735,65 +1107,77 @@
 
   async function refreshPosterMetadata(options) {
     if (!state.archive) return;
-    const force = Boolean(options && options.force);
-    const kind = state.dashboardKind === "movies" ? "movies" : "shows";
-    const collection = kind === "movies" ? dashboardItems() : state.archive.data.shows;
-    const metadataBucket = kind === "movies" ? state.archive.metadata.movies : state.archive.metadata.shows;
-    const items = collection.filter(function (item) {
-      const current = metadataBucket[item.metadataKey];
-      return force || !hasPoster(current);
-    }).sort(sortByTitle);
-    if (!items.length) {
-      showStatus("Posters checked", `Every ${kind === "movies" ? "movie" : "show"} already has a poster match.`, 100);
-      setTimeout(hideStatus, 1400);
-      return;
-    }
-
-    const refreshItems = items;
-    let found = 0;
-    let failed = 0;
-    for (let i = 0; i < refreshItems.length; i += 1) {
-      const item = refreshItems[i];
-      const denominator = refreshItems.length;
-      const remainingInFilter = Math.max(items.length - i - 1, 0);
-      const scope = kind === "movies" ? `, ${remainingInFilter} unchecked in this filter` : "";
-      const batchText = kind === "movies" ? ` batch ${Math.floor(i / MOVIE_REFRESH_BATCH_SIZE) + 1}` : "";
-      showStatus("Refreshing posters", `${item.title} (${i + 1} of ${denominator}${scope})${batchText}`, Math.round((i / Math.max(denominator, 1)) * 100));
-      try {
-        const result = kind === "movies" ? await fetchBestMovieMetadata(item) : await fetchBestMetadata(item.title);
-        if (result) {
-          metadataBucket[item.metadataKey] = result;
-          if (hasPoster(result)) found += 1;
-        }
-      } catch (error) {
-        failed += 1;
-        console.warn(error);
-      }
-      if (kind === "movies" && (i + 1) % MOVIE_REFRESH_BATCH_SIZE === 0) {
-        state.archive.metadata.fetchedAt = new Date().toISOString();
-        state.archive.summary = buildSummary(state.archive.data);
-        await rememberArchiveBestEffort(state.archive);
-        render();
-        await wait(1200);
-      }
-      if (i < refreshItems.length - 1) await wait(kind === "movies" ? 650 : 450);
-    }
-    state.archive.metadata.fetchedAt = new Date().toISOString();
-    state.archive.metadata.matchSummary = {
-      attempted: state.archive.data.shows.length,
-      matched: metadataImageCount(state.archive, "shows"),
-      remaining: missingPosterItems("shows").length
-    };
-    state.archive.summary = buildSummary(state.archive.data);
-    await rememberArchiveBestEffort(state.archive);
+    if (state.refreshInProgress) return;
+    state.refreshInProgress = true;
     render();
-    const remaining = kind === "movies" ? missingPosterItems("movies").filter(function (item) {
-      return state.dashboardLetter === "all" || titleBucket(item.title) === state.dashboardLetter;
-    }).length : missingPosterItems("shows").length;
-    const more = kind === "movies" && remaining ? ` ${remaining} still missing in this filter after lookup.` : "";
-    const failureText = failed ? ` ${failed} lookups failed.` : "";
-    showStatus("Poster refresh complete", `${found} ${kind === "movies" ? "movie" : "show"} posters were filled.${failureText}${more}`, 100);
-    setTimeout(hideStatus, kind === "movies" ? 5000 : 1800);
+    const force = Boolean(options && options.force);
+    try {
+      const kind = state.dashboardKind === "movies" ? "movies" : "shows";
+      const collection = force
+        ? (kind === "movies" ? state.archive.data.movies : state.archive.data.shows)
+        : (kind === "movies" ? dashboardItems() : state.archive.data.shows);
+      const metadataBucket = kind === "movies" ? state.archive.metadata.movies : state.archive.metadata.shows;
+      const items = collection.filter(function (item) {
+        const current = metadataBucket[item.metadataKey];
+        return force || !hasPoster(current);
+      }).sort(sortByTitle);
+      if (!items.length) {
+        showStatus("Posters checked", `Every ${kind === "movies" ? "movie" : "show"} already has a poster match.`, 100);
+        setTimeout(hideStatus, 1400);
+        return;
+      }
+
+      const refreshItems = items;
+      let found = 0;
+      let failed = 0;
+      for (let i = 0; i < refreshItems.length; i += 1) {
+        const item = refreshItems[i];
+        const denominator = refreshItems.length;
+        const remainingInFilter = Math.max(items.length - i - 1, 0);
+        const scope = kind === "movies" ? `, ${remainingInFilter} unchecked in this filter` : "";
+        const batchText = kind === "movies" ? ` batch ${Math.floor(i / MOVIE_REFRESH_BATCH_SIZE) + 1}` : "";
+        showStatus("Refreshing posters", `${item.title} (${i + 1} of ${denominator}${scope})${batchText}`, Math.round((i / Math.max(denominator, 1)) * 100));
+        try {
+          const result = kind === "movies" ? await fetchBestMovieMetadata(item) : await fetchBestMetadata(item.title);
+          if (result) {
+            metadataBucket[item.metadataKey] = result;
+            if (hasPoster(result)) found += 1;
+          }
+        } catch (error) {
+          failed += 1;
+          console.warn(error);
+        }
+        if (kind === "movies" && (i + 1) % MOVIE_REFRESH_BATCH_SIZE === 0) {
+          state.archive.metadata.fetchedAt = new Date().toISOString();
+          state.archive.summary = buildSummary(state.archive.data);
+          finalizeArchive(state.archive);
+          await rememberArchiveBestEffort(state.archive);
+          render();
+          await wait(1200);
+        }
+        if (i < refreshItems.length - 1) await wait(kind === "movies" ? 650 : 450);
+      }
+      state.archive.metadata.fetchedAt = new Date().toISOString();
+      state.archive.metadata.matchSummary = {
+        attempted: state.archive.data.shows.length,
+        matched: metadataImageCount(state.archive, "shows"),
+        remaining: missingPosterItems("shows").length
+      };
+      state.archive.summary = buildSummary(state.archive.data);
+      finalizeArchive(state.archive);
+      await rememberArchiveBestEffort(state.archive);
+      render();
+      const remaining = kind === "movies" ? missingPosterItems("movies").filter(function (item) {
+        return state.dashboardLetter === "all" || titleBucket(item.title) === state.dashboardLetter;
+      }).length : missingPosterItems("shows").length;
+      const more = kind === "movies" && remaining ? ` ${remaining} still missing in this filter after lookup.` : "";
+      const failureText = failed ? ` ${failed} lookups failed.` : "";
+      showStatus("Poster refresh complete", `${found} ${kind === "movies" ? "movie" : "show"} posters were filled.${failureText}${more}`, 100);
+      setTimeout(hideStatus, kind === "movies" ? 5000 : 1800);
+    } finally {
+      state.refreshInProgress = false;
+      render();
+    }
   }
 
   function chooseTvmazeMatch(title, results) {
@@ -822,11 +1206,87 @@
     archive.data.shows = dedupeShows(archive.data.shows || [], archive.metadata.shows);
     archive.data.movies = dedupeMovies(archive.data.movies || [], archive.metadata.movies);
     archive.data.watchHistory = dedupeWatchHistory(archive.data.watchHistory || []);
+    archive.data.comments = dedupeComments(archive.data.comments || []);
+    archive.data.reactions = dedupeReactions(archive.data.reactions || []);
     archive.data.ratings = [];
-    archive.data.reactions = [];
-    archive.data.comments = [];
+    refreshMemoryCounts(archive.data);
+    indexArchiveSearch(archive);
     archive.summary = buildSummary(archive.data);
     return archive;
+  }
+
+  function indexArchiveSearch(archive) {
+    const metadata = archive.metadata || { shows: {}, movies: {} };
+    (archive.data.shows || []).forEach(function (show) {
+      const meta = metadata.shows && metadata.shows[show.metadataKey];
+      show.searchText = searchableParts([
+        show.title,
+        "show",
+        show.followed ? "followed" : "",
+        show.favorited ? "favorite" : "",
+        show.forLater ? "watch list for later" : "",
+        show.archived ? "archived" : "",
+        show.firstWatchedAt,
+        show.lastWatchedAt,
+        show.releaseDate,
+        show.watchedEpisodes ? `${show.watchedEpisodes} watched episodes` : "",
+        show.commentCount ? `${show.commentCount} comments` : "",
+        show.reactionCount ? `${show.reactionCount} reactions` : "",
+        meta && meta.name,
+        meta && meta.provider,
+        meta && Array.isArray(meta.genres) ? meta.genres.join(" ") : ""
+      ]);
+    });
+    (archive.data.movies || []).forEach(function (movie) {
+      const meta = metadata.movies && metadata.movies[movie.metadataKey];
+      movie.searchText = searchableParts([
+        movie.title,
+        "movie",
+        movie.followed ? "followed" : "",
+        movie.forLater ? "watch list for later" : "",
+        movie.archived ? "archived" : "",
+        movie.firstWatchedAt,
+        movie.lastWatchedAt,
+        movie.releaseDate,
+        movie.watchedCount ? `${movie.watchedCount} watched` : "",
+        movie.commentCount ? `${movie.commentCount} comments` : "",
+        movie.reactionCount ? `${movie.reactionCount} reactions` : "",
+        meta && meta.name,
+        meta && meta.provider,
+        meta && Array.isArray(meta.genres) ? meta.genres.join(" ") : ""
+      ]);
+    });
+    (archive.data.watchHistory || []).forEach(function (row) {
+      row.searchText = searchableParts([
+        row.title,
+        row.type === "movie" ? "movie" : "show episode",
+        row.seasonNumber ? `season ${row.seasonNumber}` : "",
+        row.episodeNumber ? `episode ${row.episodeNumber}` : "",
+        row.watchedAt,
+        row.watchCount ? `${row.watchCount} watched` : ""
+      ]);
+    });
+    (archive.data.comments || []).forEach(function (item) {
+      item.searchText = searchableParts([
+        item.title,
+        item.type,
+        item.text,
+        item.createdAt,
+        memoryContext(item),
+        item.isSpoiler ? "spoiler" : "",
+        item.likeCount ? `${item.likeCount} likes` : ""
+      ]);
+    });
+    (archive.data.reactions || []).forEach(function (item) {
+      item.searchText = searchableParts([
+        item.title,
+        item.type,
+        reactionLabel(item.reactionId),
+        item.createdAt,
+        memoryContext(item),
+        item.count ? `${item.count} reactions` : ""
+      ]);
+    });
   }
 
   function dedupeShows(shows, metadata) {
@@ -935,6 +1395,89 @@
     });
   }
 
+  function dedupeComments(records) {
+    const seen = new Set();
+    return records.filter(function (record) {
+      if (!record || !record.text || !record.title) return false;
+      const type = record.type === "movie" ? "movie" : record.type === "episode" ? "episode" : "show";
+      record.type = type;
+      record.title = clean(record.title);
+      record.showTitle = clean(record.showTitle);
+      record.movieTitle = clean(record.movieTitle);
+      record.showId = record.showTitle ? `show:${canonicalTitleKey(record.showTitle)}` : null;
+      record.movieId = record.movieTitle ? `movie:${canonicalTitleKey(record.movieTitle)}` : null;
+      record.text = clean(record.text);
+      record.likeCount = number(record.likeCount);
+      record.isSpoiler = Boolean(record.isSpoiler);
+      const key = [
+        record.sourceFile,
+        record.id,
+        type,
+        canonicalTitleKey(record.title),
+        record.seasonNumber,
+        record.episodeNumber,
+        record.createdAt,
+        record.text
+      ].join("|");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).sort(sortMemoryItems);
+  }
+
+  function dedupeReactions(records) {
+    const seen = new Set();
+    return records.filter(function (record) {
+      if (!record || !record.reactionId || !record.title) return false;
+      const type = record.type === "movie" ? "movie" : record.type === "episode" ? "episode" : "show";
+      record.type = type;
+      record.title = clean(record.title);
+      record.showTitle = clean(record.showTitle);
+      record.movieTitle = clean(record.movieTitle);
+      record.showId = record.showTitle ? `show:${canonicalTitleKey(record.showTitle)}` : null;
+      record.movieId = record.movieTitle ? `movie:${canonicalTitleKey(record.movieTitle)}` : null;
+      record.reactionId = clean(record.reactionId);
+      record.count = number(record.count) || 1;
+      const key = [
+        record.sourceFile,
+        record.id,
+        type,
+        canonicalTitleKey(record.title),
+        record.seasonNumber,
+        record.episodeNumber,
+        record.reactionId
+      ].join("|");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).sort(sortMemoryItems);
+  }
+
+  function refreshMemoryCounts(data) {
+    (data.shows || []).forEach(function (show) {
+      show.commentCount = 0;
+      show.reactionCount = 0;
+    });
+    (data.movies || []).forEach(function (movie) {
+      movie.commentCount = 0;
+      movie.reactionCount = 0;
+    });
+    const shows = new Map((data.shows || []).map(function (show) {
+      return [canonicalTitleKey(show.title), show];
+    }));
+    const movies = new Map((data.movies || []).map(function (movie) {
+      return [canonicalTitleKey(movie.title), movie];
+    }));
+    (data.comments || []).forEach(function (item) {
+      const target = item.type === "movie" ? movies.get(canonicalTitleKey(item.movieTitle || item.title)) : shows.get(canonicalTitleKey(item.showTitle || item.title));
+      if (target) target.commentCount += 1;
+    });
+    (data.reactions || []).forEach(function (item) {
+      const target = item.type === "movie" ? movies.get(canonicalTitleKey(item.movieTitle || item.title)) : shows.get(canonicalTitleKey(item.showTitle || item.title));
+      if (target) target.reactionCount += number(item.count) || 1;
+    });
+  }
+
   function render() {
     if (!state.archive) return;
     els.archiveTitle.textContent = "Your TV Time library";
@@ -943,7 +1486,9 @@
       els.views[route].hidden = route !== state.route;
     });
     document.querySelectorAll(".tab").forEach(function (tab) {
-      tab.classList.toggle("is-active", tab.dataset.route === state.route);
+      const active = tab.dataset.route === state.route;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-current", active ? "page" : "false");
     });
 
     if (state.route === "dashboard") renderDashboard();
@@ -956,22 +1501,25 @@
     const summary = archive.summary;
     const activeItems = dashboardItems();
     const activeLabel = state.dashboardKind === "shows" ? "shows" : "movies";
+    const totalItems = state.dashboardKind === "shows" ? archive.data.shows.length : archive.data.movies.length;
+    const resultText = `${formatCount(activeItems.length)} of ${formatCount(totalItems)} ${activeLabel}`;
+    const refreshDisabled = state.refreshInProgress ? " disabled aria-disabled=\"true\"" : "";
     els.views.dashboard.innerHTML = `
       <div class="grid stats-grid">
-        ${stat("Shows", summary.shows)}
-        ${stat("Movies", summary.movies)}
-        ${stat("Watched items", summary.watchRecords)}
+        ${stat("Shows", formatCount(summary.shows))}
+        ${stat("Movies", formatCount(summary.movies))}
+        ${stat("Watched items", formatCount(summary.watchRecords))}
         ${stat(formatWatchTimeDetail(summary.runtimeSeconds), formatWatchTimeHours(summary.runtimeSeconds))}
       </div>
       <div class="section-band">
         <div class="section-head">
           <div>
             <h2>${dashboardTitle()}</h2>
-            <p>${activeItems.length} ${activeLabel}, sorted alphabetically. ${state.dashboardKind === "shows" ? "Posters come from TVmaze when available." : "Movie posters use Cinemeta/Stremio first, then optional TMDb when a key is saved."}</p>
+            <p>${resultText}, sorted alphabetically. ${state.dashboardKind === "shows" ? "Posters come from TVmaze when available." : "Movie posters use Cinemeta/Stremio first, then optional TMDb when a key is saved."}</p>
           </div>
           <div class="section-actions">
             <span class="pill">${metadataImageCount(archive, state.dashboardKind)} posters matched</span>
-            <button id="refreshPostersButton" class="button" type="button">Refresh ${state.dashboardKind === "movies" ? "movie" : "show"} posters</button>
+            <button id="refreshPostersButton" class="button" type="button"${refreshDisabled}>${state.refreshInProgress ? "Refreshing..." : `Refresh ${state.dashboardKind === "movies" ? "movie" : "show"} posters`}</button>
           </div>
         </div>
         <div class="filter-bar dashboard-filter">
@@ -983,6 +1531,7 @@
             ${alphabetChips()}
           </div>
         </div>
+        ${resultSummary("dashboard", activeItems.length, activeLabel)}
         ${posterGrid(activeItems, state.dashboardKind === "movies")}
       </div>
       <div class="section-band">
@@ -997,42 +1546,40 @@
         }).join("")}</div>
       </div>
     `;
-    document.getElementById("refreshPostersButton").addEventListener("click", function () {
-      refreshPosterMetadata({ force: false });
-    });
-    bindDashboardFilters();
   }
 
   function renderHistory() {
+    const isWatchList = state.historyMode === "watchlist";
     const rows = filteredHistoryRecords();
-    const groups = historyGroups(rows).filter(matchesQuery);
-    if (groups.length && !groups.some(function (group) { return group.key === state.selectedHistoryTitle; })) {
+    const groups = isWatchList ? filteredWatchListItems() : historyGroups(rows).filter(matchesQuery);
+    if (!isWatchList && groups.length && !groups.some(function (group) { return group.key === state.selectedHistoryTitle; })) {
       state.selectedHistoryTitle = groups[0].key;
     }
+    const title = isWatchList ? "Watch list" : "Watch history";
+    const description = isWatchList
+      ? `${groups.length} saved ${groups.length === 1 ? "item" : "items"} across shows and movies.`
+      : `${rows.length} records across ${groups.length} shows and movies.`;
     els.views.history.innerHTML = `
       <div class="section-band">
         <div class="section-head">
           <div>
-            <h2>Watch history</h2>
-            <p>${rows.length} records across ${groups.length} shows and movies.</p>
+            <h2>${title}</h2>
+            <p>${description}</p>
           </div>
         </div>
         <div class="filter-bar">
-          ${historyKindControls()}
-          <div class="segmented" aria-label="History range">
-            ${historyChip("all", "All")}
-            ${historyChip("3m", "Last 3 months")}
-            ${historyChip("6m", "Last 6 months")}
-            ${historyChip("12m", "Last 12 months")}
-            ${historyChip("custom", "Custom")}
+          <div class="segmented" aria-label="History mode">
+            ${historyModeChip("watched", "Watched")}
+            ${historyModeChip("watchlist", "Watch list")}
           </div>
-          <input id="historyStart" class="date-input" type="date" value="${escapeAttr(state.historyStart)}" ${state.historyRange === "custom" ? "" : "hidden"}>
-          <input id="historyEnd" class="date-input" type="date" value="${escapeAttr(state.historyEnd)}" ${state.historyRange === "custom" ? "" : "hidden"}>
+          ${historyKindControls()}
+          ${isWatchList ? "" : historyRangeControls()}
         </div>
-        ${historyTileGrid(groups)}
+        ${historyDateNotice()}
+        ${resultSummary(isWatchList ? "watchlist" : "history", groups.length, isWatchList ? "watch-list items" : "titles")}
+        ${isWatchList ? watchListTileGrid(groups) : historyTileGrid(groups)}
       </div>
     `;
-    bindHistoryControls();
   }
 
   function renderSettings() {
@@ -1045,9 +1592,7 @@
             <p>Your TV Time data is saved in this browser. Import the GDPR ZIP again to rebuild it.</p>
           </div>
         </div>
-        <div class="actions">
-          <button class="button primary" id="forgetArchive" type="button">Delete local library</button>
-        </div>
+        ${deleteLibraryControls()}
       </div>
       <div class="section-band">
         <div class="section-head">
@@ -1085,35 +1630,111 @@
         }))}
       </details>
     `;
-    document.getElementById("forgetArchive").addEventListener("click", async function () {
-      await forgetRememberedArchive();
-      els.loadRememberedButton.hidden = true;
-      state.archive = null;
-      els.appView.hidden = true;
-      els.emptyState.hidden = false;
-      document.body.classList.add("is-empty");
-      alert("The local TV Time Capsule library has been deleted from this browser.");
+  }
+
+  function deleteLibraryControls() {
+    if (!state.settingsConfirmDelete) {
+      return `
+        <div class="actions">
+          <button class="button danger" id="forgetArchive" type="button">Delete local library</button>
+        </div>
+      `;
+    }
+    return `
+      <div class="confirm-panel" role="group" aria-label="Confirm local library deletion">
+        <div>
+          <strong>Delete the saved local library?</strong>
+          <p>This only clears this browser's TV Time Capsule copy. Your original GDPR ZIP is not changed.</p>
+        </div>
+        <div class="actions">
+          <button class="button danger" id="confirmForgetArchive" type="button">Delete library</button>
+          <button class="button" id="cancelForgetArchive" type="button">Keep library</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function deleteLocalLibrary() {
+    await forgetRememberedArchive();
+    els.loadRememberedButton.hidden = true;
+    state.archive = null;
+    state.settingsConfirmDelete = false;
+    els.appView.hidden = true;
+    els.emptyState.hidden = false;
+    document.body.classList.add("is-empty");
+    showStatus("Local library deleted", "The saved TV Time Capsule copy was removed from this browser.", 100);
+    setTimeout(hideStatus, 2400);
+  }
+
+  function saveTmdbKey() {
+    const input = document.getElementById("tmdbKeyInput");
+    const value = input ? input.value.trim() : "";
+    if (value) localStorage.setItem(TMDB_KEY_STORAGE, value);
+    if (!value) localStorage.removeItem(TMDB_KEY_STORAGE);
+    showStatus(value ? "TMDb key saved" : "TMDb key removed", value ? "Poster refresh can now use TMDb as a fallback." : "Poster refresh will skip TMDb until a key is saved.", 100);
+    setTimeout(hideStatus, 2200);
+  }
+
+  async function reviewPosterMatch(button) {
+    const key = button.dataset.reviewSearch;
+    const input = document.querySelector(`[data-review-input="${cssEscape(key)}"]`);
+    const kind = state.dashboardKind;
+    const collection = kind === "movies" ? state.archive.data.movies : state.archive.data.shows;
+    const bucket = kind === "movies" ? state.archive.metadata.movies : state.archive.metadata.shows;
+    const item = collection.find(function (entry) {
+      return entry.metadataKey === key;
     });
-    document.getElementById("saveTmdbKey").addEventListener("click", function () {
-      const value = document.getElementById("tmdbKeyInput").value.trim();
-      if (value) localStorage.setItem(TMDB_KEY_STORAGE, value);
-      if (!value) localStorage.removeItem(TMDB_KEY_STORAGE);
-      alert(value ? "TMDb key saved for this browser." : "TMDb key removed.");
-    });
-    document.getElementById("refreshAllPosters").addEventListener("click", function () {
-      refreshPosterMetadata({ force: true });
-    });
-    bindMetadataReviewControls();
+    if (!item || !input) return;
+    const query = input.value.trim() || item.title;
+    button.disabled = true;
+    showStatus("Reviewing match", `Searching posters for ${query}...`, 20);
+    try {
+      const result = kind === "movies" ? await fetchBestMovieMetadata(query) : await fetchBestMetadata(query);
+      if (!result) {
+        showStatus("No match", "No metadata result was found for that search.", 100);
+        setTimeout(hideStatus, 1800);
+        return;
+      }
+      bucket[key] = result;
+      finalizeArchive(state.archive);
+      await rememberArchiveBestEffort(state.archive);
+      renderSettings();
+      showStatus("Match saved", `${item.title} now uses ${result.provider}: ${result.name}.`, 100);
+      setTimeout(hideStatus, 1800);
+    } catch (error) {
+      showStatus("Match failed", error.message || "The metadata search failed.", 100);
+    } finally {
+      button.disabled = false;
+    }
   }
 
   function historyChip(value, label) {
     const active = state.historyRange === value ? " is-active" : "";
-    return `<button class="chip${active}" type="button" data-history-range="${escapeAttr(value)}">${escapeHtml(label)}</button>`;
+    return `<button class="chip${active}" type="button" data-history-range="${escapeAttr(value)}" aria-pressed="${state.historyRange === value ? "true" : "false"}">${escapeHtml(label)}</button>`;
+  }
+
+  function historyModeChip(value, label) {
+    const active = state.historyMode === value ? " is-active" : "";
+    return `<button class="chip${active}" type="button" data-history-mode="${escapeAttr(value)}" aria-pressed="${state.historyMode === value ? "true" : "false"}">${escapeHtml(label)}</button>`;
+  }
+
+  function historyRangeControls() {
+    return `
+      <div class="segmented" aria-label="History range">
+        ${historyChip("all", "All")}
+        ${historyChip("3m", "Last 3 months")}
+        ${historyChip("6m", "Last 6 months")}
+        ${historyChip("12m", "Last 12 months")}
+        ${historyChip("custom", "Custom")}
+      </div>
+      <input id="historyStart" class="date-input" type="date" value="${escapeAttr(state.historyStart)}" ${state.historyRange === "custom" ? "" : "hidden"}>
+      <input id="historyEnd" class="date-input" type="date" value="${escapeAttr(state.historyEnd)}" ${state.historyRange === "custom" ? "" : "hidden"}>
+    `;
   }
 
   function dashboardKindChip(value, label) {
     const active = state.dashboardKind === value ? " is-active" : "";
-    return `<button class="chip${active}" type="button" data-dashboard-kind="${escapeAttr(value)}">${escapeHtml(label)}</button>`;
+    return `<button class="chip${active}" type="button" data-dashboard-kind="${escapeAttr(value)}" aria-pressed="${state.dashboardKind === value ? "true" : "false"}">${escapeHtml(label)}</button>`;
   }
 
   function historyKindControls() {
@@ -1129,7 +1750,7 @@
 
   function historyKindChip(value, label) {
     const active = state.historyKind === value ? " is-active" : "";
-    return `<button class="chip${active}" type="button" data-history-kind="${escapeAttr(value)}">${escapeHtml(label)}</button>`;
+    return `<button class="chip${active}" type="button" data-history-kind="${escapeAttr(value)}" aria-pressed="${state.historyKind === value ? "true" : "false"}">${escapeHtml(label)}</button>`;
   }
 
   function alphabetChips() {
@@ -1137,69 +1758,14 @@
     return letters.map(function (letter) {
       const label = letter === "all" ? "All" : letter;
       const active = state.dashboardLetter === letter ? " is-active" : "";
-      return `<button class="letter-chip${active}" type="button" data-dashboard-letter="${escapeAttr(letter)}">${escapeHtml(label)}</button>`;
+      return `<button class="letter-chip${active}" type="button" data-dashboard-letter="${escapeAttr(letter)}" aria-pressed="${state.dashboardLetter === letter ? "true" : "false"}">${escapeHtml(label)}</button>`;
     }).join("");
-  }
-
-  function bindDashboardFilters() {
-    document.querySelectorAll("[data-dashboard-kind]").forEach(function (button) {
-      button.addEventListener("click", function () {
-        state.dashboardKind = button.dataset.dashboardKind;
-        state.dashboardLetter = "all";
-        renderDashboard();
-      });
-    });
-    document.querySelectorAll("[data-dashboard-letter]").forEach(function (button) {
-      button.addEventListener("click", function () {
-        state.dashboardLetter = button.dataset.dashboardLetter;
-        renderDashboard();
-      });
-    });
   }
 
   function dashboardTitle() {
     const kind = state.dashboardKind === "shows" ? "shows" : "movies";
     if (state.dashboardLetter === "all") return `All ${kind}`;
     return `${kind[0].toUpperCase()}${kind.slice(1)} starting with ${state.dashboardLetter}`;
-  }
-
-  function bindHistoryControls() {
-    document.querySelectorAll("[data-history-kind]").forEach(function (button) {
-      button.addEventListener("click", function () {
-        state.historyKind = button.dataset.historyKind;
-        state.selectedHistoryTitle = "";
-        renderHistory();
-      });
-    });
-    document.querySelectorAll("[data-history-range]").forEach(function (button) {
-      button.addEventListener("click", function () {
-        state.historyRange = button.dataset.historyRange;
-        state.selectedHistoryTitle = "";
-        renderHistory();
-      });
-    });
-    const start = document.getElementById("historyStart");
-    const end = document.getElementById("historyEnd");
-    if (start) {
-      start.addEventListener("change", function () {
-        state.historyStart = start.value;
-        state.selectedHistoryTitle = "";
-        renderHistory();
-      });
-    }
-    if (end) {
-      end.addEventListener("change", function () {
-        state.historyEnd = end.value;
-        state.selectedHistoryTitle = "";
-        renderHistory();
-      });
-    }
-    document.querySelectorAll("[data-history-title]").forEach(function (button) {
-      button.addEventListener("click", function () {
-        state.selectedHistoryTitle = button.dataset.historyKey;
-        openHistoryDialog(state.selectedHistoryTitle);
-      });
-    });
   }
 
   function filteredHistoryRecords() {
@@ -1209,6 +1775,7 @@
       return row.watchedAt;
     });
     if (state.historyRange === "all") return records;
+    if (isInvalidCustomRange()) return [];
 
     const max = maxHistoryDate(records);
     if (!max) return records;
@@ -1230,6 +1797,41 @@
     });
   }
 
+  function isInvalidCustomRange() {
+    if (state.historyRange !== "custom" || !state.historyStart || !state.historyEnd) return false;
+    return new Date(`${state.historyStart}T00:00:00`) > new Date(`${state.historyEnd}T23:59:59`);
+  }
+
+  function historyDateNotice() {
+    if (!isInvalidCustomRange()) return "";
+    return `<div class="notice compact-notice">Start date must be before end date.</div>`;
+  }
+
+  function resultSummary(scope, total, label) {
+    const hasQuery = Boolean(state.query);
+    const filterParts = [];
+    if (scope === "dashboard" && state.dashboardLetter !== "all") filterParts.push(`Letter ${state.dashboardLetter}`);
+    if ((scope === "history" || scope === "watchlist") && state.historyKind !== "all") filterParts.push(state.historyKind === "shows" ? "Shows only" : "Movies only");
+    if (scope === "history" && state.historyRange !== "all") filterParts.push(historyRangeLabel(state.historyRange));
+    if (hasQuery) filterParts.push(`Search: "${state.query}"`);
+    const filterText = filterParts.length ? filterParts.join(" / ") : "No extra filters";
+    const resultText = `Showing ${formatCount(total)} ${total === 1 ? label.replace(/s$/, "") : label}.`;
+    return `
+      <div class="result-summary" aria-live="polite">
+        <strong>${escapeHtml(resultText)}</strong>
+        <span>${escapeHtml(total === 1 ? label.replace(/s$/, "") : label)} matched. ${escapeHtml(filterText)}</span>
+      </div>
+    `;
+  }
+
+  function historyRangeLabel(value) {
+    if (value === "3m") return "Last 3 months";
+    if (value === "6m") return "Last 6 months";
+    if (value === "12m") return "Last 12 months";
+    if (value === "custom") return "Custom dates";
+    return "All dates";
+  }
+
   function historyGroups(records) {
     const groups = new Map();
     records.forEach(function (row) {
@@ -1237,6 +1839,7 @@
       const type = row.type === "movie" ? "movie" : "show";
       const key = `${type}:${canonicalTitleKey(title)}`;
       if (!groups.has(key)) {
+        const item = titleItem(type, title);
         groups.set(key, {
           key,
           title,
@@ -1244,7 +1847,15 @@
           count: 0,
           runtimeSeconds: 0,
           lastWatchedAt: null,
-          metadataKey: canonicalTitleKey(title)
+          metadataKey: canonicalTitleKey(title),
+          commentCount: item ? number(item.commentCount) : 0,
+          reactionCount: item ? number(item.reactionCount) : 0,
+          searchText: searchableParts([
+            title,
+            type === "movie" ? "movie" : "show",
+            item && item.commentCount ? `${item.commentCount} comments` : "",
+            item && item.reactionCount ? `${item.reactionCount} reactions` : ""
+          ])
         });
       }
       const group = groups.get(key);
@@ -1252,21 +1863,92 @@
       group.runtimeSeconds += number(row.runtimeSeconds);
       group.lastWatchedAt = latest(group.lastWatchedAt, row.watchedAt);
     });
-    return Array.from(groups.values()).sort(sortByTitle);
+    return Array.from(groups.values()).map(function (group) {
+      group.searchText = searchableParts([group.searchText, group.lastWatchedAt, `${group.count} watched`]);
+      return group;
+    }).sort(sortByTitle);
+  }
+
+  function filteredWatchListItems() {
+    return watchListItems().filter(function (item) {
+      if (state.historyKind === "shows" && item.type !== "show") return false;
+      if (state.historyKind === "movies" && item.type !== "movie") return false;
+      return matchesQuery(item);
+    });
+  }
+
+  function watchListItems() {
+    const data = state.archive.data;
+    const watchedByKey = historyGroups(data.watchHistory || []).reduce(function (map, group) {
+      map[group.key] = group;
+      return map;
+    }, {});
+    const shows = (data.shows || []).filter(function (show) {
+      return show.forLater;
+    }).map(function (show) {
+      const key = `show:${canonicalTitleKey(show.title)}`;
+      const watched = watchedByKey[key];
+      return {
+        key,
+        type: "show",
+        title: show.title,
+        metadataKey: show.metadataKey || canonicalTitleKey(show.title),
+        forLaterAt: show.forLaterAt || null,
+        watchedSummary: watched ? `${watched.count} watched episodes` : "",
+        searchText: searchableParts([show.title, "show watch list for later", show.forLaterAt, watched ? `${watched.count} watched episodes` : ""])
+      };
+    });
+    const movies = (data.movies || []).filter(function (movie) {
+      return movie.forLater;
+    }).map(function (movie) {
+      const key = `movie:${canonicalTitleKey(movie.title)}`;
+      const watched = watchedByKey[key];
+      return {
+        key,
+        type: "movie",
+        title: movie.title,
+        metadataKey: movie.metadataKey || canonicalTitleKey(movie.title),
+        forLaterAt: movie.forLaterAt || null,
+        watchedSummary: watched ? `Also watched ${watched.count} ${watched.count === 1 ? "time" : "times"}` : "",
+        searchText: searchableParts([movie.title, "movie watch list for later", movie.forLaterAt, watched ? `${watched.count} watched` : ""])
+      };
+    });
+    return shows.concat(movies).sort(sortByTitle);
   }
 
   function historyTileGrid(items) {
-    if (!items.length) return `<div class="empty-note">No history for this date range.</div>`;
+    if (!items.length) return `<div class="empty-note">No watched history for this date range.</div>`;
     return `<div class="poster-grid">${items.map(function (item) {
       const meta = item.type === "movie" ? state.archive.metadata.movies[item.metadataKey] : state.archive.metadata.shows[item.metadataKey];
       const image = meta && meta.image && (meta.image.medium || meta.image.original);
       const active = item.key === state.selectedHistoryTitle ? " is-selected" : "";
+      const label = `Open ${item.title} ${item.type === "movie" ? "movie" : "show"} watch history`;
       return `
-        <button class="poster-card poster-button${active}" type="button" data-history-title="${escapeAttr(item.title)}" data-history-key="${escapeAttr(item.key)}">
+        <button class="poster-card poster-button${active}" type="button" data-history-title="${escapeAttr(item.title)}" data-history-key="${escapeAttr(item.key)}" aria-label="${escapeAttr(label)}">
           <div class="poster-art">${image ? `<img alt="" src="${escapeAttr(image)}">` : initials(item.title)}</div>
           <div class="poster-body">
             <h3>${escapeHtml(item.title)}</h3>
             <p>${item.count} watched / last ${escapeHtml(formatDate(item.lastWatchedAt))}</p>
+            ${memoryBadges(item)}
+          </div>
+        </button>
+      `;
+    }).join("")}</div>`;
+  }
+
+  function watchListTileGrid(items) {
+    if (!items.length) return `<div class="empty-note">No watch-list items found.</div>`;
+    return `<div class="poster-grid">${items.map(function (item) {
+      const meta = item.type === "movie" ? state.archive.metadata.movies[item.metadataKey] : state.archive.metadata.shows[item.metadataKey];
+      const image = meta && meta.image && (meta.image.medium || meta.image.original);
+      const status = [item.type === "movie" ? "Movie" : "Show", item.forLaterAt ? `Added ${formatDate(item.forLaterAt)}` : ""].filter(Boolean).join(" / ");
+      const label = `Open ${item.title} watch-list details`;
+      return `
+        <button class="poster-card poster-button" type="button" data-watchlist-key="${escapeAttr(item.key)}" aria-label="${escapeAttr(label)}">
+          <div class="poster-art">${image ? `<img alt="" src="${escapeAttr(image)}">` : initials(item.title)}</div>
+          <div class="poster-body">
+            <h3>${escapeHtml(item.title)}</h3>
+            <p>${escapeHtml(status)}</p>
           </div>
         </button>
       `;
@@ -1274,24 +1956,46 @@
   }
 
   function openHistoryDialog(groupKey) {
-    const rows = filteredHistoryRecords()
+    openTitleDialog(groupKey, "watched", false);
+  }
+
+  function openTitleDialog(groupKey, activeTab, useAllHistory) {
+    rememberDialogReturnFocus();
+    const type = groupKey.split(":")[0] === "movie" ? "movie" : "show";
+    const sourceRows = useAllHistory ? state.archive.data.watchHistory : filteredHistoryRecords();
+    const rows = sourceRows
       .filter(function (row) { return `${row.type === "movie" ? "movie" : "show"}:${canonicalTitleKey(row.title)}` === groupKey; })
       .sort(function (a, b) { return String(b.watchedAt || "").localeCompare(String(a.watchedAt || "")); });
-    if (!rows.length) return;
-    const title = rows[0].title || "Unknown";
-    const type = rows.some(function (row) { return row.type === "movie"; }) ? "movie" : "show";
+    const item = titleItemByKey(groupKey);
+    const title = item ? item.title : rows[0] ? rows[0].title : "Unknown";
+    const comments = titleComments(type, title);
+    const reactions = titleReactions(type, title);
+    const watchedSummary = rows.length ? `${rows.length} ${type === "movie" ? "watch records" : "watched episodes"}${type === "show" ? ` across ${seasonGroups(rows).length} seasons` : ""}` : "No watched records found for this title";
+    const selectedTab = activeTab || "watched";
     els.historyDialogContent.innerHTML = `
       <div class="modal-head">
         <div>
           <p class="eyebrow">${type === "movie" ? "Movie history" : "Watched episodes"}</p>
           <h2>${escapeHtml(title)}</h2>
-          <p>${rows.length} ${type === "movie" ? "watch records" : "watched episodes"}${type === "show" ? ` across ${seasonGroups(rows).length} seasons` : ""}</p>
+          <p>${escapeHtml(watchedSummary)}</p>
         </div>
         <button class="icon-button" type="button" aria-label="Close" data-close-history>&times;</button>
       </div>
-      ${type === "movie" ? movieHistoryModal(rows) : showHistoryModal(rows)}
+      <div class="modal-tabs" role="tablist" aria-label="${escapeAttr(title)} details">
+        ${modalTab("watched", "Watched", selectedTab, "watched-panel")}
+        ${modalTab("comments", `Comments${comments.length ? ` (${comments.length})` : ""}`, selectedTab, "comments-panel")}
+        ${modalTab("reactions", `Reactions${reactionTotal(reactions) ? ` (${reactionTotal(reactions)})` : ""}`, selectedTab, "reactions-panel")}
+      </div>
+      <div id="watched-panel" class="modal-panel" role="tabpanel" data-modal-panel="watched" ${selectedTab === "watched" ? "" : "hidden"}>
+        ${rows.length ? type === "movie" ? movieHistoryModal(rows) : showHistoryModal(rows) : `<div class="empty-note">No watched records found for this title.</div>`}
+      </div>
+      <div id="comments-panel" class="modal-panel" role="tabpanel" data-modal-panel="comments" ${selectedTab === "comments" ? "" : "hidden"}>
+        ${commentsModal(type, comments)}
+      </div>
+      <div id="reactions-panel" class="modal-panel" role="tabpanel" data-modal-panel="reactions" ${selectedTab === "reactions" ? "" : "hidden"}>
+        ${reactionsModal(type, reactions)}
+      </div>
     `;
-    els.historyDialogContent.querySelector("[data-close-history]").addEventListener("click", closeHistoryDialog);
     if (typeof els.historyDialog.showModal === "function") {
       els.historyDialog.showModal();
     } else {
@@ -1299,15 +2003,71 @@
     }
   }
 
+  function modalTab(value, label, activeTab, panelId) {
+    const active = value === activeTab ? " is-active" : "";
+    return `<button id="${escapeAttr(value)}-tab" class="chip${active}" type="button" role="tab" data-modal-tab="${escapeAttr(value)}" aria-controls="${escapeAttr(panelId)}" aria-selected="${value === activeTab ? "true" : "false"}" tabindex="${value === activeTab ? "0" : "-1"}">${escapeHtml(label)}</button>`;
+  }
+
+  function activateModalTab(button) {
+    const tab = button.dataset.modalTab;
+    els.historyDialogContent.querySelectorAll("[data-modal-tab]").forEach(function (node) {
+      const active = node === button;
+      node.classList.toggle("is-active", active);
+      node.setAttribute("aria-selected", active ? "true" : "false");
+      node.tabIndex = active ? 0 : -1;
+    });
+    els.historyDialogContent.querySelectorAll("[data-modal-panel]").forEach(function (panel) {
+      panel.hidden = panel.dataset.modalPanel !== tab;
+    });
+  }
+
   function closeHistoryDialog() {
     if (els.historyDialog.open && typeof els.historyDialog.close === "function") {
       els.historyDialog.close();
     } else {
       els.historyDialog.removeAttribute("open");
+      restoreDialogFocus();
+    }
+  }
+
+  function openWatchListDialog(itemKey) {
+    rememberDialogReturnFocus();
+    const item = watchListItems().find(function (entry) {
+      return entry.key === itemKey;
+    });
+    if (!item) return;
+    const meta = item.type === "movie" ? state.archive.metadata.movies[item.metadataKey] : state.archive.metadata.shows[item.metadataKey];
+    const image = meta && meta.image && (meta.image.medium || meta.image.original);
+    const added = item.forLaterAt ? `<p>Added for later ${escapeHtml(formatDate(item.forLaterAt))}</p>` : "";
+    const watched = item.watchedSummary ? `<p>${escapeHtml(item.watchedSummary)}</p>` : "";
+    els.historyDialogContent.innerHTML = `
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">${item.type === "movie" ? "Movie watch list" : "Show watch list"}</p>
+          <h2>${escapeHtml(item.title)}</h2>
+          <p>On watch list</p>
+        </div>
+        <button class="icon-button" type="button" aria-label="Close" data-close-history>&times;</button>
+      </div>
+      <div class="watchlist-detail">
+        <div class="poster-art">${image ? `<img alt="" src="${escapeAttr(image)}">` : initials(item.title)}</div>
+        <div>
+          <span class="pill">${item.type === "movie" ? "Movie" : "Show"}</span>
+          <h3>On watch list</h3>
+          ${added}
+          ${watched}
+        </div>
+      </div>
+    `;
+    if (typeof els.historyDialog.showModal === "function") {
+      els.historyDialog.showModal();
+    } else {
+      els.historyDialog.setAttribute("open", "");
     }
   }
 
   function openExportHelpDialog() {
+    rememberDialogReturnFocus();
     if (typeof els.exportHelpDialog.showModal === "function") {
       els.exportHelpDialog.showModal();
     } else {
@@ -1320,7 +2080,20 @@
       els.exportHelpDialog.close();
     } else {
       els.exportHelpDialog.removeAttribute("open");
+      restoreDialogFocus();
     }
+  }
+
+  function rememberDialogReturnFocus() {
+    const active = document.activeElement;
+    state.dialogReturnFocus = active && typeof active.focus === "function" ? active : null;
+  }
+
+  function restoreDialogFocus() {
+    if (state.dialogReturnFocus && document.contains(state.dialogReturnFocus)) {
+      state.dialogReturnFocus.focus({ preventScroll: true });
+    }
+    state.dialogReturnFocus = null;
   }
 
   function showHistoryModal(rows) {
@@ -1385,6 +2158,127 @@
     `;
   }
 
+  function commentsModal(type, items) {
+    if (!items.length) return `<div class="empty-note">No comments found for this title.</div>`;
+    return `<div class="memory-list">${items.map(function (item) {
+      return `
+        <article class="memory-card">
+          <div class="memory-meta">
+            <span>${escapeHtml(memoryContext(item))}</span>
+            ${item.createdAt ? `<span>${escapeHtml(formatDate(item.createdAt))}</span>` : ""}
+            ${item.isSpoiler ? `<span class="pill spoiler-pill">Spoiler</span>` : ""}
+          </div>
+          <blockquote>${escapeHtml(item.text)}</blockquote>
+          ${item.likeCount ? `<p>${item.likeCount} ${item.likeCount === 1 ? "like" : "likes"}</p>` : ""}
+        </article>
+      `;
+    }).join("")}</div>`;
+  }
+
+  function reactionsModal(type, items) {
+    if (!items.length) return `<div class="empty-note">No reactions found for this title.</div>`;
+    const groups = reactionGroups(items);
+    return `<div class="season-stack memory-stack">${groups.map(function (group) {
+      return `
+        <section class="season-block">
+          <div class="season-head">
+            <h3>${escapeHtml(group.label)}</h3>
+            <span class="pill">${reactionTotal(group.items)} reactions</span>
+          </div>
+          <div class="reaction-chip-row">
+            ${group.items.map(function (item) {
+              const count = number(item.count) || 1;
+              return `<span class="reaction-chip">${escapeHtml(reactionLabel(item.reactionId))}${count > 1 ? ` x${count}` : ""}</span>`;
+            }).join("")}
+          </div>
+        </section>
+      `;
+    }).join("")}</div>`;
+  }
+
+  function reactionGroups(items) {
+    const groups = new Map();
+    items.forEach(function (item) {
+      const label = memoryContext(item);
+      const key = [item.type, item.seasonNumber, item.episodeNumber, label].join("|");
+      if (!groups.has(key)) groups.set(key, { label, items: [] });
+      groups.get(key).items.push(item);
+    });
+    return Array.from(groups.values()).sort(function (a, b) {
+      return a.label.localeCompare(b.label, undefined, { numeric: true });
+    });
+  }
+
+  function memoryContext(item) {
+    if (item.type === "movie") return "Movie";
+    if (item.type === "episode") {
+      const season = clean(item.seasonNumber);
+      const episode = clean(item.episodeNumber);
+      if (season && episode) return `Season ${season} / Episode ${episode}`;
+      if (episode) return `Episode ${episode}`;
+    }
+    return "Show";
+  }
+
+  function titleComments(type, title) {
+    const key = canonicalTitleKey(title);
+    return (state.archive.data.comments || []).filter(function (item) {
+      if (type === "movie") return item.type === "movie" && canonicalTitleKey(item.movieTitle || item.title) === key;
+      return item.type !== "movie" && canonicalTitleKey(item.showTitle || item.title) === key;
+    }).sort(sortMemoryItems);
+  }
+
+  function titleReactions(type, title) {
+    const key = canonicalTitleKey(title);
+    return (state.archive.data.reactions || []).filter(function (item) {
+      if (type === "movie") return item.type === "movie" && canonicalTitleKey(item.movieTitle || item.title) === key;
+      return item.type !== "movie" && canonicalTitleKey(item.showTitle || item.title) === key;
+    }).sort(sortMemoryItems);
+  }
+
+  function reactionTotal(items) {
+    return items.reduce(function (sum, item) {
+      return sum + (number(item.count) || 1);
+    }, 0);
+  }
+
+  function reactionLabel(reactionId) {
+    const id = clean(reactionId);
+    const label = REACTION_LABELS[id];
+    if (label) return `${label} (${REACTION_EMOJIS[label] || "emoji"})`;
+    return `Unknown TV Time reaction (ID ${id})`;
+  }
+
+  function titleItem(type, title) {
+    if (!state.archive || !state.archive.data) return null;
+    const key = canonicalTitleKey(title);
+    const items = type === "movie" ? state.archive.data.movies : state.archive.data.shows;
+    return (items || []).find(function (item) {
+      return canonicalTitleKey(item.title) === key;
+    }) || null;
+  }
+
+  function titleItemByKey(groupKey) {
+    const parts = clean(groupKey).split(":");
+    const type = parts[0] === "movie" ? "movie" : "show";
+    const key = parts.slice(1).join(":");
+    if (!state.archive || !state.archive.data) return null;
+    const items = type === "movie" ? state.archive.data.movies : state.archive.data.shows;
+    return (items || []).find(function (item) {
+      return canonicalTitleKey(item.title) === key;
+    }) || null;
+  }
+
+  function memoryBadges(item) {
+    const badges = [];
+    if (number(item.commentCount)) badges.push(`${number(item.commentCount)} ${number(item.commentCount) === 1 ? "comment" : "comments"}`);
+    if (number(item.reactionCount)) badges.push(`${number(item.reactionCount)} ${number(item.reactionCount) === 1 ? "reaction" : "reactions"}`);
+    if (!badges.length) return "";
+    return `<div class="memory-badges">${badges.map(function (label) {
+      return `<span>${escapeHtml(label)}</span>`;
+    }).join("")}</div>`;
+  }
+
   function metadataReviewList() {
     const kind = state.dashboardKind;
     const items = missingPosterItems(kind).slice(0, 80);
@@ -1403,39 +2297,6 @@
         </div>
       `;
     }).join("")}</div>`;
-  }
-
-  function bindMetadataReviewControls() {
-    document.querySelectorAll("[data-review-search]").forEach(function (button) {
-      button.addEventListener("click", async function () {
-        const key = button.dataset.reviewSearch;
-        const input = document.querySelector(`[data-review-input="${cssEscape(key)}"]`);
-        const kind = state.dashboardKind;
-        const collection = kind === "movies" ? state.archive.data.movies : state.archive.data.shows;
-        const bucket = kind === "movies" ? state.archive.metadata.movies : state.archive.metadata.shows;
-        const item = collection.find(function (entry) {
-          return entry.metadataKey === key;
-        });
-        if (!item || !input) return;
-        const query = input.value.trim() || item.title;
-        showStatus("Reviewing match", `Searching posters for ${query}...`, 20);
-        try {
-          const result = kind === "movies" ? await fetchBestMovieMetadata(query) : await fetchBestMetadata(query);
-          if (!result) {
-            showStatus("No match", "No metadata result was found for that search.", 100);
-            setTimeout(hideStatus, 1600);
-            return;
-          }
-          bucket[key] = result;
-          await rememberArchiveBestEffort(state.archive);
-          renderSettings();
-          showStatus("Match saved", `${item.title} now uses ${result.provider}: ${result.name}.`, 100);
-          setTimeout(hideStatus, 1600);
-        } catch (error) {
-          showStatus("Match failed", error.message || "The metadata search failed.", 100);
-        }
-      });
-    });
   }
 
   function posterGrid(items, isMovie) {
@@ -1508,7 +2369,13 @@
 
   function matchesQuery(item) {
     if (!state.query) return true;
-    return JSON.stringify(item).toLowerCase().includes(state.query);
+    return String(item.searchText || searchableParts([item.title, item.type])).includes(state.query);
+  }
+
+  function searchableParts(parts) {
+    return parts.filter(Boolean).map(function (part) {
+      return clean(part).toLowerCase();
+    }).join(" ");
   }
 
   function setRoute(route) {
@@ -1663,6 +2530,14 @@
     return a.title.localeCompare(b.title);
   }
 
+  function sortMemoryItems(a, b) {
+    const dateCompare = String(b.createdAt || b.updatedAt || "").localeCompare(String(a.createdAt || a.updatedAt || ""));
+    if (dateCompare) return dateCompare;
+    const titleCompare = String(a.title || "").localeCompare(String(b.title || ""));
+    if (titleCompare) return titleCompare;
+    return number(a.episodeNumber) - number(b.episodeNumber);
+  }
+
   function pick(row, keys) {
     return keys.reduce(function (out, key) {
       if (row[key] !== undefined) out[key] = clean(row[key]);
@@ -1786,6 +2661,10 @@
     const hours = Math.floor(total / 3600);
     const minutes = Math.round((total % 3600) / 60);
     return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+
+  function formatCount(value) {
+    return number(value).toLocaleString();
   }
 
   function formatWatchTimeHours(seconds) {

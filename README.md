@@ -75,6 +75,21 @@ update, choose the original TV Time GDPR ZIP again.
 - show/movie posters where metadata providers have a match
 - history grouped by show/movie and date range
 - watched show episodes grouped by season
+- comments and reaction memories where TV Time included them in the export
+
+## Update Warning: Comments and Reactions
+
+TV Time Capsule now imports safe comment and reaction files from the official
+GDPR ZIP when they are present. These memories stay local in your browser and
+are shown from the History view, not from the Dashboard library grid.
+
+Comments may include spoilers, old personal notes, or community text that TV
+Time included in your export. Reactions are mapped from TV Time reaction IDs
+where known, and unknown reaction IDs are shown plainly instead of guessed.
+
+This improves browsing your archive, but it is not a full community migration:
+likes, discussion context, GIFs, translations, and complete social threads may
+still be missing or incomplete depending on what TV Time exported.
 
 ## What You Cannot Fully Migrate
 
@@ -83,7 +98,6 @@ Time includes in the export and what other apps support importing.
 
 Community and social data is especially limited:
 
-- comments
 - GIF reactions
 - episode discussions
 - likes

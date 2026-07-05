@@ -20,9 +20,9 @@
           </span>
         </a>
         <nav class="tabs" aria-label="Primary">
-          <button class="tab is-active" data-route="dashboard">Dashboard</button>
-          <button class="tab" data-route="history">History</button>
-          <button class="tab" data-route="settings">Settings</button>
+          <button class="tab is-active" data-route="dashboard" aria-current="page">Dashboard</button>
+          <button class="tab" data-route="history" aria-current="false">History</button>
+          <button class="tab" data-route="settings" aria-current="false">Settings</button>
         </nav>
       </header>
 
@@ -55,7 +55,7 @@
           </div>
         </section>
 
-        <section id="statusPanel" class="status-panel" hidden>
+        <section id="statusPanel" class="status-panel" aria-live="polite" aria-atomic="true" hidden>
           <div>
             <strong id="statusTitle">Importing</strong>
             <p id="statusText">Preparing your archive...</p>
