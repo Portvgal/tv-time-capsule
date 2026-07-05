@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const ARCHIVE_SCHEMA_VERSION = 3;
+  const ARCHIVE_SCHEMA_VERSION = 4;
   const DB_NAME = "tv-time-capsule";
   const DB_STORE = "archives";
   const REMEMBERED_KEY = "remembered";
@@ -42,6 +42,41 @@
     Confused: "🙃",
     Tense: "😬"
   };
+  const RATING_LABELS = {
+    3: "Wow",
+    27: "Good",
+    29: "Meh"
+  };
+  const STATS_METADATA_BATCH_SIZE = 18;
+  const TMDB_GENRES = {
+    12: "Adventure",
+    14: "Fantasy",
+    16: "Animation",
+    18: "Drama",
+    27: "Horror",
+    28: "Action",
+    35: "Comedy",
+    36: "History",
+    37: "Western",
+    53: "Thriller",
+    80: "Crime",
+    99: "Documentary",
+    878: "Science Fiction",
+    9648: "Mystery",
+    10402: "Music",
+    10749: "Romance",
+    10751: "Family",
+    10752: "War",
+    10759: "Action & Adventure",
+    10762: "Kids",
+    10763: "News",
+    10764: "Reality",
+    10765: "Sci-Fi & Fantasy",
+    10766: "Soap",
+    10767: "Talk",
+    10768: "War & Politics",
+    10770: "TV Movie"
+  };
 
   const SAFE_IMPORT_FILES = new Set([
     "tracking-prod-records.csv",
@@ -62,7 +97,14 @@
     "emotions-3-prod-episode_votes.csv",
     "emotions-live-votes.csv",
     "episode_emotion.csv",
-    "tv_show_user_emotion_count.csv"
+    "tv_show_user_emotion_count.csv",
+    "ratings-3-prod-episode_votes.csv",
+    "ratings-live-votes.csv",
+    "ratings-prod-episode_votes.csv",
+    "ratings-v2-prod-votes.csv",
+    "show_character_episode_vote.csv",
+    "stats-prod-cache.csv",
+    "tracking-prod-count-by-timeframe.csv"
   ]);
 
   const SENSITIVE_FILES = new Set([
@@ -97,6 +139,8 @@
     historyRange: "all",
     historyStart: "",
     historyEnd: "",
+    statsKind: "shows",
+    statsRefreshInProgress: false,
     selectedHistoryTitle: "",
     settingsConfirmDelete: false,
     refreshInProgress: false,
@@ -122,6 +166,7 @@
     historyDialogContent: document.getElementById("historyDialogContent"),
     views: {
       dashboard: document.getElementById("dashboardView"),
+      stats: document.getElementById("statsView"),
       history: document.getElementById("historyView"),
       settings: document.getElementById("settingsView")
     }
@@ -187,6 +232,15 @@
     }
     if (button.id === "refreshPostersButton") {
       refreshPosterMetadata({ force: false });
+      return;
+    }
+    if (button.dataset.statsKind) {
+      state.statsKind = button.dataset.statsKind;
+      renderStats();
+      return;
+    }
+    if (button.id === "refreshStatsMetadata") {
+      refreshStatsMetadata();
       return;
     }
     if (button.dataset.historyMode) {
@@ -396,7 +450,11 @@
     const watchHistory = [];
     const comments = [];
     const reactions = [];
+    const ratings = [];
+    const characterVotes = [];
     const badges = [];
+    const timeframeStats = [];
+    const statsCache = [];
     const stats = {};
     const historyKeys = new Set();
 
@@ -420,6 +478,7 @@
           lastWatchedAt: null,
           releaseDate: clean(row.release_date),
           ratingCount: 0,
+          characterVoteCount: 0,
           reactionCount: 0,
           commentCount: 0,
           metadataKey: canonicalTitleKey(title)
@@ -449,6 +508,7 @@
           forLater: false,
           archived: false,
           ratingCount: 0,
+          characterVoteCount: 0,
           reactionCount: 0,
           commentCount: 0,
           metadataKey: canonicalTitleKey(title)
@@ -495,6 +555,15 @@
     addMovieReactions(parsed["emotions-live-votes.csv"] || [], "emotions-live-votes.csv");
     addLegacyEpisodeEmotions(parsed["episode_emotion.csv"] || []);
     addShowEmotionCounts(parsed["tv_show_user_emotion_count.csv"] || []);
+    addEpisodeRatings(parsed["ratings-3-prod-episode_votes.csv"] || [], "ratings-3-prod-episode_votes.csv");
+    addEpisodeRatings(parsed["ratings-prod-episode_votes.csv"] || [], "ratings-prod-episode_votes.csv");
+    addEpisodeRatings(parsed["ratings-v2-prod-votes.csv"] || [], "ratings-v2-prod-votes.csv");
+    addMovieRatings(parsed["ratings-live-votes.csv"] || [], "ratings-live-votes.csv");
+    addCharacterVotes(parsed["show_character_episode_vote.csv"] || []);
+    addAggregateRuntimeRows(parsed["tracking-prod-records-v2.csv"] || []);
+    addAggregateRuntimeRows(parsed["tracking-prod-records.csv"] || []);
+    addTimeframeStats(parsed["tracking-prod-count-by-timeframe.csv"] || []);
+    addStatsCache(parsed["stats-prod-cache.csv"] || []);
 
     (parsed["user_badge.csv"] || []).forEach(function (row) {
       badges.push({
@@ -782,6 +851,114 @@
       });
     }
 
+    function addEpisodeRatings(rows, sourceFile) {
+      rows.forEach(function (row) {
+        const show = ensureShow(row, "series_name");
+        const ratingId = parseVoteValue(row.vote_key);
+        if (!show || !ratingId) return;
+        ratings.push({
+          id: clean(row.vote_key) || `${sourceFile}:${ratings.length}`,
+          type: "episode",
+          showTitle: show.title,
+          movieTitle: "",
+          title: show.title,
+          showId: show.id,
+          movieId: null,
+          episodeId: clean(row.episode_id),
+          seasonNumber: clean(row.season_number),
+          episodeNumber: clean(row.episode_number),
+          ratingId,
+          ratingLabel: ratingLabel(ratingId),
+          createdAt: clean(row.created_at || row.updated_at),
+          sourceFile
+        });
+        show.ratingCount += 1;
+      });
+    }
+
+    function addMovieRatings(rows, sourceFile) {
+      rows.forEach(function (row) {
+        const movie = ensureMovie(row);
+        const ratingId = parseVoteValue(row.vote_key);
+        if (!movie || !ratingId) return;
+        ratings.push({
+          id: clean(row.uuid || row.vote_key) || `${sourceFile}:${ratings.length}`,
+          type: "movie",
+          showTitle: "",
+          movieTitle: movie.title,
+          title: movie.title,
+          showId: null,
+          movieId: movie.id,
+          episodeId: clean(row.episode_id),
+          seasonNumber: "",
+          episodeNumber: "",
+          ratingId,
+          ratingLabel: ratingLabel(ratingId),
+          createdAt: clean(row.created_at || row.updated_at),
+          sourceFile
+        });
+        movie.ratingCount += 1;
+      });
+    }
+
+    function addCharacterVotes(rows) {
+      rows.forEach(function (row) {
+        const show = ensureShow(row, "tv_show_name");
+        if (!show) return;
+        characterVotes.push({
+          id: [clean(row.episode_id), clean(row.show_character_id), clean(row.created_at)].join(":") || `character-vote:${characterVotes.length}`,
+          type: "episode",
+          showTitle: show.title,
+          title: show.title,
+          showId: show.id,
+          episodeId: clean(row.episode_id),
+          characterId: clean(row.show_character_id),
+          seasonNumber: clean(row.episode_season_number),
+          episodeNumber: clean(row.episode_number),
+          createdAt: clean(row.created_at),
+          updatedAt: clean(row.updated_at),
+          sourceFile: "show_character_episode_vote.csv"
+        });
+        show.characterVoteCount += 1;
+      });
+    }
+
+    function addTimeframeStats(rows) {
+      rows.forEach(function (row) {
+        timeframeStats.push({
+          type: clean(row.type),
+          count: number(row.count),
+          runtimeSeconds: number(row.runtime),
+          expiresAt: clean(row.expires_at),
+          sourceFile: "tracking-prod-count-by-timeframe.csv"
+        });
+      });
+    }
+
+    function addAggregateRuntimeRows(rows) {
+      rows.forEach(function (row) {
+        const tvRuntime = number(row.total_series_runtime);
+        const movieRuntime = number(row.total_movies_runtime);
+        if (tvRuntime) stats.total_series_runtime = String(Math.max(number(stats.total_series_runtime), tvRuntime));
+        if (movieRuntime) stats.total_movies_runtime = String(Math.max(number(stats.total_movies_runtime), movieRuntime));
+      });
+    }
+
+    function addStatsCache(rows) {
+      rows.forEach(function (row) {
+        statsCache.push({
+          statType: clean(row.stat_type),
+          type: clean(row.type),
+          interactionType: clean(row.interaction_type),
+          entityType: clean(row.entity_type),
+          stats: clean(row.stats),
+          version: clean(row.version),
+          timestamp: clean(row.timestamp),
+          sourceFile: "stats-prod-cache.csv"
+        });
+      });
+    }
+
     const sortedHistory = watchHistory.sort(function (a, b) {
       return String(b.watchedAt || "").localeCompare(String(a.watchedAt || ""));
     });
@@ -790,10 +967,13 @@
       shows: Array.from(shows.values()).sort(sortByTitle),
       movies: Array.from(movies.values()).sort(sortByTitle),
       watchHistory: sortedHistory,
-      ratings: [],
+      ratings: ratings.sort(sortMemoryItems),
       reactions: reactions.sort(sortMemoryItems),
       comments: comments.sort(sortMemoryItems),
+      characterVotes: characterVotes.sort(sortMemoryItems),
       badges,
+      timeframeStats,
+      statsCache,
       stats
     };
   }
@@ -845,6 +1025,9 @@
       status: best.status || "",
       premiered: best.premiered || "",
       ended: best.ended || "",
+      networkName: best.network && best.network.name ? best.network.name : "",
+      webChannelName: best.webChannel && best.webChannel.name ? best.webChannel.name : "",
+      averageRuntime: number(best.averageRuntime || best.runtime),
       summary: stripHtml(best.summary || ""),
       score: best._matchScore || 0,
       provider: "TVmaze"
@@ -862,6 +1045,67 @@
     }
     if (hasPoster(tmdb)) return tmdb;
     return tvmaze || tmdb;
+  }
+
+  async function fetchStatsMetadata(item, kind) {
+    if (kind === "movies") return fetchStatsMovieMetadata(item);
+    const base = await fetchBestMetadata(item.title || item);
+    if (!base || base.provider !== "TVmaze" || !base.id) return base;
+    try {
+      const details = await tvmazeShowDetails(base.id);
+      return Object.assign({}, base, details);
+    } catch (error) {
+      console.warn("TVmaze show detail lookup failed.", error);
+      return base;
+    }
+  }
+
+  async function fetchStatsMovieMetadata(item) {
+    const base = await fetchBestMovieMetadata(item);
+    let tmdb = null;
+    try {
+      tmdb = await tmdbMovieSearch(typeof item === "string" ? item : item.title);
+      if (tmdb && tmdb.id) {
+        tmdb = Object.assign({}, tmdb, await tmdbMovieDetails(tmdb.id));
+      }
+    } catch (error) {
+      console.warn("TMDb movie stats lookup failed.", error);
+    }
+    if (!base) return tmdb;
+    if (!tmdb) return base;
+    return Object.assign({}, base, {
+      genres: Array.isArray(tmdb.genres) && tmdb.genres.length ? tmdb.genres : base.genres,
+      runtimeSeconds: number(tmdb.runtimeSeconds) || number(base.runtimeSeconds),
+      summary: base.summary || tmdb.summary,
+      provider: base.provider === tmdb.provider ? base.provider : `${base.provider} + ${tmdb.provider}`
+    });
+  }
+
+  async function tvmazeShowDetails(id) {
+    const response = await fetch(`https://api.tvmaze.com/shows/${encodeURIComponent(id)}?embed[]=episodes&embed[]=nextepisode`);
+    if (!response.ok) {
+      throw new Error(`TVmaze returned ${response.status}`);
+    }
+    const body = await response.json();
+    const episodes = body._embedded && Array.isArray(body._embedded.episodes) ? body._embedded.episodes : [];
+    const nextEpisode = body._embedded && body._embedded.nextepisode ? body._embedded.nextepisode : null;
+    return {
+      genres: body.genres || [],
+      status: body.status || "",
+      premiered: body.premiered || "",
+      ended: body.ended || "",
+      networkName: body.network && body.network.name ? body.network.name : "",
+      webChannelName: body.webChannel && body.webChannel.name ? body.webChannel.name : "",
+      averageRuntime: number(body.averageRuntime || body.runtime),
+      episodeCount: episodes.length,
+      nextEpisode: nextEpisode ? {
+        name: nextEpisode.name || "",
+        season: nextEpisode.season || "",
+        number: nextEpisode.number || "",
+        airdate: nextEpisode.airdate || ""
+      } : null,
+      provider: "TVmaze"
+    };
   }
 
   async function fetchBestMovieMetadata(input) {
@@ -905,7 +1149,7 @@
       name: best.name,
       url: best.id ? `https://www.imdb.com/title/${best.id}/` : "",
       image: best.poster ? { medium: best.poster, original: best.poster } : null,
-      genres: [],
+      genres: Array.isArray(best.genres) ? best.genres : [],
       status: "",
       premiered: best.releaseInfo || "",
       ended: "",
@@ -1033,7 +1277,7 @@
         medium: `https://image.tmdb.org/t/p/w342${best.poster_path}`,
         original: `https://image.tmdb.org/t/p/original${best.poster_path}`
       } : null,
-      genres: [],
+      genres: Array.isArray(best.genre_ids) ? best.genre_ids.map(function (id) { return TMDB_GENRES[id]; }).filter(Boolean) : [],
       status: "",
       premiered: best.first_air_date || "",
       ended: "",
@@ -1069,6 +1313,23 @@
       summary: best.overview || "",
       score: best._matchScore || 0,
       provider: "TMDb"
+    };
+  }
+
+  async function tmdbMovieDetails(id) {
+    const apiKey = getTmdbKey();
+    if (!apiKey || !id) return {};
+    const url = `https://api.themoviedb.org/3/movie/${encodeURIComponent(id)}?api_key=${encodeURIComponent(apiKey)}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`TMDb returned ${response.status}`);
+    }
+    const body = await response.json();
+    return {
+      genres: Array.isArray(body.genres) ? body.genres.map(function (genre) { return genre.name; }).filter(Boolean) : [],
+      runtimeSeconds: number(body.runtime) * 60,
+      status: body.status || "",
+      summary: body.overview || ""
     };
   }
 
@@ -1208,7 +1469,10 @@
     archive.data.watchHistory = dedupeWatchHistory(archive.data.watchHistory || []);
     archive.data.comments = dedupeComments(archive.data.comments || []);
     archive.data.reactions = dedupeReactions(archive.data.reactions || []);
-    archive.data.ratings = [];
+    archive.data.ratings = dedupeRatings(archive.data.ratings || []);
+    archive.data.characterVotes = dedupeCharacterVotes(archive.data.characterVotes || []);
+    archive.data.timeframeStats = archive.data.timeframeStats || [];
+    archive.data.statsCache = archive.data.statsCache || [];
     refreshMemoryCounts(archive.data);
     indexArchiveSearch(archive);
     archive.summary = buildSummary(archive.data);
@@ -1232,6 +1496,8 @@
         show.watchedEpisodes ? `${show.watchedEpisodes} watched episodes` : "",
         show.commentCount ? `${show.commentCount} comments` : "",
         show.reactionCount ? `${show.reactionCount} reactions` : "",
+        show.ratingCount ? `${show.ratingCount} ratings` : "",
+        show.characterVoteCount ? `${show.characterVoteCount} character votes` : "",
         meta && meta.name,
         meta && meta.provider,
         meta && Array.isArray(meta.genres) ? meta.genres.join(" ") : ""
@@ -1251,6 +1517,7 @@
         movie.watchedCount ? `${movie.watchedCount} watched` : "",
         movie.commentCount ? `${movie.commentCount} comments` : "",
         movie.reactionCount ? `${movie.reactionCount} reactions` : "",
+        movie.ratingCount ? `${movie.ratingCount} ratings` : "",
         meta && meta.name,
         meta && meta.provider,
         meta && Array.isArray(meta.genres) ? meta.genres.join(" ") : ""
@@ -1287,6 +1554,23 @@
         item.count ? `${item.count} reactions` : ""
       ]);
     });
+    (archive.data.ratings || []).forEach(function (item) {
+      item.searchText = searchableParts([
+        item.title,
+        item.type,
+        ratingLabel(item.ratingId),
+        item.createdAt,
+        memoryContext(item)
+      ]);
+    });
+    (archive.data.characterVotes || []).forEach(function (item) {
+      item.searchText = searchableParts([
+        item.title,
+        "character vote",
+        item.createdAt,
+        memoryContext(item)
+      ]);
+    });
   }
 
   function dedupeShows(shows, metadata) {
@@ -1313,6 +1597,7 @@
         existing.firstWatchedAt = earliest(existing.firstWatchedAt, show.firstWatchedAt);
         existing.lastWatchedAt = latest(existing.lastWatchedAt, show.lastWatchedAt);
         existing.ratingCount += number(show.ratingCount);
+        existing.characterVoteCount += number(show.characterVoteCount);
         existing.reactionCount += number(show.reactionCount);
         existing.commentCount += number(show.commentCount);
         (show.tvTimeIds || []).forEach(function (id) {
@@ -1362,6 +1647,7 @@
         existing.followedAt = earliest(existing.followedAt, movie.followedAt);
         existing.forLaterAt = earliest(existing.forLaterAt, movie.forLaterAt);
         existing.ratingCount += number(movie.ratingCount);
+        existing.characterVoteCount += number(movie.characterVoteCount);
         existing.reactionCount += number(movie.reactionCount);
         existing.commentCount += number(movie.commentCount);
         (movie.tvTimeIds || []).forEach(function (id) {
@@ -1453,14 +1739,68 @@
     }).sort(sortMemoryItems);
   }
 
+  function dedupeRatings(records) {
+    const seen = new Set();
+    return records.filter(function (record) {
+      if (!record || !record.ratingId || !record.title) return false;
+      const type = record.type === "movie" ? "movie" : "episode";
+      record.type = type;
+      record.title = clean(record.title);
+      record.showTitle = clean(record.showTitle);
+      record.movieTitle = clean(record.movieTitle);
+      record.showId = record.showTitle ? `show:${canonicalTitleKey(record.showTitle)}` : null;
+      record.movieId = record.movieTitle ? `movie:${canonicalTitleKey(record.movieTitle)}` : null;
+      record.ratingId = clean(record.ratingId);
+      record.ratingLabel = ratingLabel(record.ratingId);
+      const key = [
+        record.sourceFile,
+        type,
+        canonicalTitleKey(record.title),
+        record.episodeId,
+        record.seasonNumber,
+        record.episodeNumber,
+        record.ratingId
+      ].join("|");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).sort(sortMemoryItems);
+  }
+
+  function dedupeCharacterVotes(records) {
+    const seen = new Set();
+    return records.filter(function (record) {
+      if (!record || !record.title) return false;
+      record.type = "episode";
+      record.title = clean(record.title);
+      record.showTitle = clean(record.showTitle || record.title);
+      record.showId = `show:${canonicalTitleKey(record.showTitle)}`;
+      const key = [
+        canonicalTitleKey(record.showTitle),
+        record.episodeId,
+        record.characterId,
+        record.seasonNumber,
+        record.episodeNumber,
+        record.createdAt
+      ].join("|");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).sort(sortMemoryItems);
+  }
+
   function refreshMemoryCounts(data) {
     (data.shows || []).forEach(function (show) {
       show.commentCount = 0;
       show.reactionCount = 0;
+      show.ratingCount = 0;
+      show.characterVoteCount = 0;
     });
     (data.movies || []).forEach(function (movie) {
       movie.commentCount = 0;
       movie.reactionCount = 0;
+      movie.ratingCount = 0;
+      movie.characterVoteCount = 0;
     });
     const shows = new Map((data.shows || []).map(function (show) {
       return [canonicalTitleKey(show.title), show];
@@ -1476,12 +1816,20 @@
       const target = item.type === "movie" ? movies.get(canonicalTitleKey(item.movieTitle || item.title)) : shows.get(canonicalTitleKey(item.showTitle || item.title));
       if (target) target.reactionCount += number(item.count) || 1;
     });
+    (data.ratings || []).forEach(function (item) {
+      const target = item.type === "movie" ? movies.get(canonicalTitleKey(item.movieTitle || item.title)) : shows.get(canonicalTitleKey(item.showTitle || item.title));
+      if (target) target.ratingCount += 1;
+    });
+    (data.characterVotes || []).forEach(function (item) {
+      const target = shows.get(canonicalTitleKey(item.showTitle || item.title));
+      if (target) target.characterVoteCount += 1;
+    });
   }
 
   function render() {
     if (!state.archive) return;
     els.archiveTitle.textContent = "Your TV Time library";
-    els.toolbar.hidden = state.route === "settings";
+    els.toolbar.hidden = state.route === "settings" || state.route === "stats";
     Object.keys(els.views).forEach(function (route) {
       els.views[route].hidden = route !== state.route;
     });
@@ -1492,6 +1840,7 @@
     });
 
     if (state.route === "dashboard") renderDashboard();
+    if (state.route === "stats") renderStats();
     if (state.route === "history") renderHistory();
     if (state.route === "settings") renderSettings();
   }
@@ -1544,6 +1893,67 @@
         <div class="pill-row">${archive.importReport.skippedFiles.slice(0, 12).map(function (item) {
           return `<span class="pill">${escapeHtml(item.file)}</span>`;
         }).join("")}</div>
+      </div>
+    `;
+  }
+
+  function renderStats() {
+    const model = buildStatsModel(state.archive);
+    const summary = model.summary;
+    const current = state.statsKind === "movies" ? model.movies : model.shows;
+    const refreshDisabled = state.statsRefreshInProgress ? " disabled aria-disabled=\"true\"" : "";
+    els.views.stats.innerHTML = `
+      <div class="stats-page">
+        <div class="stats-overview">
+          ${statsMetric("Combined watch time", formatWatchTimeHours(summary.runtimeSeconds), formatWatchTimeDetail(summary.runtimeSeconds), "teal")}
+          ${statsMetric("TV watch time", formatWatchTimeHours(summary.tvRuntimeSeconds), `${formatWatchTimeDays(summary.tvRuntimeSeconds)} / ${summary.tvRuntimeSourceLabel}`, "pink")}
+          ${statsMetric("Movie watch time", formatWatchTimeHours(summary.movieRuntimeSeconds), `${formatWatchTimeDays(summary.movieRuntimeSeconds)} / ${summary.movieRuntimeSourceLabel}`, "gold")}
+          ${statsMetric("Watched items", formatCount(summary.watchRecords), `${formatCount(summary.episodeRecords)} episodes / ${formatCount(summary.movieRecords)} movies`, "blue")}
+        </div>
+        ${statsTimelineCard(model.timeline)}
+        <section class="section-band stats-workspace">
+          <div class="section-head">
+            <div>
+              <h2>${state.statsKind === "movies" ? "Movie stats" : "Show stats"}</h2>
+              <p>${current.description}</p>
+            </div>
+            <div class="section-actions">
+              <div class="segmented" aria-label="Stats type">
+                ${statsKindChip("shows", "Shows")}
+                ${statsKindChip("movies", "Movies")}
+              </div>
+              ${model.metadataReady ? confidencePill("Enhanced with provider metadata") : confidencePill("Needs metadata refresh", "warn")}
+              <button id="refreshStatsMetadata" class="button" type="button"${refreshDisabled}>${state.statsRefreshInProgress ? "Refreshing..." : "Refresh stats metadata"}</button>
+            </div>
+          </div>
+          <div class="stats-layout">
+            <div class="stats-column">
+              ${statsBigCard(current.runtimeTitle, formatWatchTimeHours(current.runtimeSeconds), `${formatWatchTimeDays(current.runtimeSeconds)} / ${current.runtimeSourceLabel}`, current.runtimeConfidence)}
+              ${statsChartCard(current.countChartTitle, current.weeklyCounts, current.chartUnit, "From GDPR export")}
+              ${statsRankCard(current.marathonTitle, current.marathons, current.marathonColumns, "From GDPR export")}
+              ${statsRankCard(current.genreTitle, current.genres, ["Genre", current.kindLabel], current.hasGenres ? "Enhanced with provider metadata" : "Needs metadata refresh")}
+              ${statsRankCard(current.networkTitle, current.networks, [current.networkColumn, current.kindLabel], current.hasNetworks ? "Enhanced with provider metadata" : "Needs metadata refresh")}
+            </div>
+            <div class="stats-column">
+              ${statsBigCard(current.countTitle, formatCount(current.watchedCount), current.countCaption, "From GDPR export")}
+              ${statsChartCard(current.runtimeChartTitle, current.weeklyRuntime, "hours", "From GDPR export")}
+              ${statsRankCard(current.ratingsTitle, current.ratings, ["Title", "Top rating"], "From GDPR export")}
+              ${state.statsKind === "shows" ? statsRankCard("Character votes by show", current.characterVotes, ["Show", "Votes"], "From GDPR export") : statsBigCard("Character votes", formatCount(current.characterVoteCount), `${formatCount(current.characterVoteTitles)} movies with character votes`, "From GDPR export")}
+              ${statsCommunityCards(current)}
+              ${statsFutureCards(current)}
+            </div>
+          </div>
+        </section>
+        <section class="section-band">
+          <div class="section-head">
+            <div>
+              <h2>Badges</h2>
+              <p>Badges imported from your GDPR export. Artwork is not included.</p>
+            </div>
+            ${confidencePill("From GDPR export")}
+          </div>
+          ${statsBadgeGrid(model.badges)}
+        </section>
       </div>
     `;
   }
@@ -1629,6 +2039,332 @@
           return [escapeHtml(row.file), escapeHtml(row.reason)];
         }))}
       </details>
+    `;
+  }
+
+  function buildStatsModel(archive) {
+    const data = archive.data || {};
+    const metadata = archive.metadata || { shows: {}, movies: {} };
+    const summary = buildSummary(data);
+    const watchRows = data.watchHistory || [];
+    const episodeRows = watchRows.filter(function (row) { return row.type !== "movie"; });
+    const movieRows = watchRows.filter(function (row) { return row.type === "movie"; });
+    const showItems = data.shows || [];
+    const movieItems = data.movies || [];
+    const showMetadata = metadata.shows || {};
+    const movieMetadata = metadata.movies || {};
+    const showMetaItems = showItems.map(function (item) { return showMetadata[item.metadataKey] || null; }).filter(Boolean);
+    const movieMetaItems = movieItems.map(function (item) { return movieMetadata[item.metadataKey] || null; }).filter(Boolean);
+    const showRemaining = remainingShowEpisodes(showItems, showMetadata, episodeRows);
+    const movieRemaining = remainingMovieRuntime(movieItems, movieMetadata);
+
+    return {
+      summary,
+      metadataReady: showMetaItems.some(hasStatsMetadata) || movieMetaItems.some(hasStatsMetadata),
+      timeline: statsTimeline(data, summary),
+      badges: data.badges || [],
+      shows: statsSideModel({
+        type: "shows",
+        items: showItems,
+        rows: episodeRows,
+        runtimeSeconds: summary.tvRuntimeSeconds,
+        runtimeSourceLabel: summary.tvRuntimeSourceLabel,
+        runtimeConfidence: summary.tvRuntimeConfidence,
+        metadata: showMetadata,
+        comments: (data.comments || []).filter(function (item) { return item.type !== "movie"; }),
+        ratings: (data.ratings || []).filter(function (item) { return item.type !== "movie"; }),
+        characterVotes: data.characterVotes || [],
+        remaining: showRemaining,
+        watchedLabel: "episodes",
+        kindLabel: "Shows",
+        description: "Episode watches, show comments, reactions, ratings, marathons, genres, networks, and catch-up estimates.",
+        runtimeTitle: "Time spent watching episodes",
+        countTitle: "Total episodes watched",
+        countChartTitle: "Episodes watched by week",
+        runtimeChartTitle: "Episode hours by week",
+        marathonTitle: "Biggest episode marathons",
+        genreTitle: "Top show genres",
+        networkTitle: "Top show networks",
+        networkColumn: "Network",
+        ratingsTitle: "Most rated shows"
+      }),
+      movies: statsSideModel({
+        type: "movies",
+        items: movieItems,
+        rows: movieRows,
+        runtimeSeconds: summary.movieRuntimeSeconds,
+        runtimeSourceLabel: summary.movieRuntimeSourceLabel,
+        runtimeConfidence: summary.movieRuntimeConfidence,
+        metadata: movieMetadata,
+        comments: (data.comments || []).filter(function (item) { return item.type === "movie"; }),
+        ratings: (data.ratings || []).filter(function (item) { return item.type === "movie"; }),
+        characterVotes: [],
+        remaining: movieRemaining,
+        watchedLabel: "movies",
+        kindLabel: "Movies",
+        description: "Movie watches, comments, ratings, genres, platforms, remaining watch-list time, and catch-up estimates.",
+        runtimeTitle: "Time spent watching movies",
+        countTitle: "Total movies watched",
+        countChartTitle: "Movies watched by week",
+        runtimeChartTitle: "Movie hours by week",
+        marathonTitle: "Biggest movie marathons",
+        genreTitle: "Top movie genres",
+        networkTitle: "Top movie platforms",
+        networkColumn: "Platform",
+        ratingsTitle: "Most rated movies"
+      })
+    };
+  }
+
+  function statsSideModel(options) {
+    const runtimeSeconds = number(options.runtimeSeconds) || sumBy(options.rows, "runtimeSeconds");
+    const last7 = recentRows(options.rows, 7);
+    const recent60 = recentRows(options.rows, 60);
+    const weeklyCounts = weeklySeries(options.rows, function () { return 1; }, 12);
+    const weeklyRuntime = weeklySeries(options.rows, function (row) { return number(row.runtimeSeconds) / 3600; }, 12);
+    const metadataItems = options.items.map(function (item) {
+      return {
+        item,
+        meta: options.metadata[item.metadataKey] || null
+      };
+    });
+    const genres = rankedMetadataValues(metadataItems, "genres");
+    const networks = rankedMetadataValues(metadataItems, options.type === "shows" ? "network" : "platform");
+    const remaining = options.remaining || { count: 0, runtimeSeconds: 0, sourceCount: 0 };
+    const pace = recent60.length / (60 / 7);
+    const catchUpWeeks = pace > 0 ? remaining.count / pace : 0;
+    const catchUpDate = catchUpWeeks > 0 ? addDays(new Date(), Math.ceil(catchUpWeeks * 7)) : null;
+    const commentTitles = uniqueTitleCount(options.comments);
+    const likes = options.comments.reduce(function (sum, item) {
+      return sum + number(item.likeCount);
+    }, 0);
+
+    return {
+      type: options.type,
+      description: options.description,
+      kindLabel: options.kindLabel,
+      chartUnit: options.watchedLabel,
+      runtimeTitle: options.runtimeTitle,
+      countTitle: options.countTitle,
+      countChartTitle: options.countChartTitle,
+      runtimeChartTitle: options.runtimeChartTitle,
+      marathonTitle: options.marathonTitle,
+      marathonColumns: ["Title", options.type === "movies" ? "Watches" : "Episodes"],
+      genreTitle: options.genreTitle,
+      networkTitle: options.networkTitle,
+      networkColumn: options.networkColumn,
+      ratingsTitle: options.ratingsTitle,
+      watchedCount: options.rows.length,
+      runtimeSeconds,
+      runtimeSourceLabel: options.runtimeSourceLabel || "Calculated from detailed logs",
+      runtimeConfidence: options.runtimeConfidence || "Calculated from detailed logs",
+      last7Count: last7.length,
+      runtimeCaption: `${formatRuntime(sumBy(last7, "runtimeSeconds"))} in the last 7 days`,
+      countCaption: `${formatCount(last7.length)} in the last 7 days`,
+      weeklyCounts,
+      weeklyRuntime,
+      marathons: marathonRows(options.rows),
+      genres,
+      networks,
+      hasGenres: genres.length > 0,
+      hasNetworks: networks.length > 0,
+      ratings: ratingRankRows(options.ratings),
+      ratingCount: options.ratings.length,
+      characterVotes: characterVoteRows(options.characterVotes),
+      characterVoteCount: options.characterVotes.length,
+      characterVoteTitles: uniqueTitleCount(options.characterVotes),
+      commentCount: options.comments.length,
+      commentTitles,
+      earnedLikes: likes,
+      likesPerComment: options.comments.length ? Math.round((likes / options.comments.length) * 10) / 10 : 0,
+      remainingCount: remaining.count,
+      remainingRuntimeSeconds: remaining.runtimeSeconds,
+      remainingSourceCount: remaining.sourceCount,
+      catchUpPace: pace,
+      catchUpDate
+    };
+  }
+
+  function statsKindChip(value, label) {
+    const active = state.statsKind === value ? " is-active" : "";
+    return `<button class="chip${active}" type="button" data-stats-kind="${escapeAttr(value)}" aria-pressed="${state.statsKind === value ? "true" : "false"}">${escapeHtml(label)}</button>`;
+  }
+
+  function statsMetric(label, value, caption, tone) {
+    return `
+      <article class="stats-metric stats-tone-${escapeAttr(tone)}">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+        <em>${escapeHtml(caption)}</em>
+      </article>
+    `;
+  }
+
+  function statsBigCard(title, value, caption, confidence) {
+    return `
+      <article class="stats-card">
+        <div class="stats-card-head">
+          <h3>${escapeHtml(title)}</h3>
+          ${confidencePill(confidence, confidence.indexOf("Needs") === 0 ? "warn" : "")}
+        </div>
+        <strong class="stats-big-value">${escapeHtml(value)}</strong>
+        <p>${escapeHtml(caption)}</p>
+      </article>
+    `;
+  }
+
+  function statsChartCard(title, series, unit, confidence) {
+    return `
+      <article class="stats-card">
+        <div class="stats-card-head">
+          <h3>${escapeHtml(title)}</h3>
+          ${confidencePill(confidence)}
+        </div>
+        ${barChart(series, unit)}
+      </article>
+    `;
+  }
+
+  function statsRankCard(title, rows, headers, confidence) {
+    const warn = confidence.indexOf("Needs") === 0 ? "warn" : "";
+    return `
+      <article class="stats-card">
+        <div class="stats-card-head">
+          <h3>${escapeHtml(title)}</h3>
+          ${confidencePill(confidence, warn)}
+        </div>
+        ${rankedList(headers, rows)}
+      </article>
+    `;
+  }
+
+  function statsCommunityCards(current) {
+    return `
+      <div class="stats-mini-grid">
+        ${statsSmallCard("Comments", formatCount(current.commentCount), `Across ${formatCount(current.commentTitles)} ${current.type === "movies" ? "movies" : "shows"}`, "From GDPR export")}
+        ${statsSmallCard("Earned likes", formatCount(current.earnedLikes), `${formatCount(current.likesPerComment)} likes per comment`, "From GDPR export")}
+      </div>
+    `;
+  }
+
+  function statsTimelineCard(timeline) {
+    return `
+      <section class="section-band stats-timeline-card">
+        <div class="section-head">
+          <div>
+            <h2>Tracking timeline</h2>
+            <p>Account history is shown separately from total watch-time duration.</p>
+          </div>
+          ${confidencePill("From GDPR export")}
+        </div>
+        <div class="stats-timeline-grid">
+          ${timelineItem("TV Time account", timeline.accountCreatedAt ? formatDate(timeline.accountCreatedAt) : "Unavailable", "From user statistics")}
+          ${timelineItem("First detailed log", timeline.firstLog ? formatDate(timeline.firstLog.watchedAt) : "Unavailable", timeline.firstLog ? watchLogLabel(timeline.firstLog) : "No dated watch log found")}
+          ${timelineItem("Last tracked log", timeline.lastLog ? formatDate(timeline.lastLog.watchedAt) : "Unavailable", timeline.lastLog ? watchLogLabel(timeline.lastLog) : "No dated watch log found")}
+        </div>
+        ${timeline.hasAggregateBeforeDetails ? `<div class="notice compact-notice">Older activity may exist only as aggregate totals in the GDPR export, so the first detailed log is not necessarily your first ever TV Time watch.</div>` : ""}
+      </section>
+    `;
+  }
+
+  function timelineItem(label, value, caption) {
+    return `
+      <article class="stats-timeline-item">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+        <p>${escapeHtml(caption)}</p>
+      </article>
+    `;
+  }
+
+  function statsFutureCards(current) {
+    const remainingLabel = current.type === "movies" ? "Remaining movies" : "Remaining episodes";
+    const unit = current.type === "movies" ? "movies/week" : "episodes/week";
+    const date = current.catchUpDate ? isoDate(current.catchUpDate) : "Unavailable";
+    const confidence = current.remainingSourceCount ? "Enhanced with provider metadata" : "Needs metadata refresh";
+    return `
+      <div class="stats-mini-grid">
+        ${statsSmallCard(remainingLabel, formatCount(current.remainingCount), current.remainingSourceCount ? `${formatRuntime(current.remainingRuntimeSeconds)} left to watch` : "Provider episode/runtime data needed", confidence)}
+        ${statsSmallCard("Catch-up pace", `${formatDecimal(current.catchUpPace)} ${unit}`, `Catch-up date: ${date}`, current.remainingSourceCount ? "Estimated from recent watch pace" : "Needs metadata refresh")}
+      </div>
+    `;
+  }
+
+  function statsSmallCard(title, value, caption, confidence) {
+    return `
+      <article class="stats-card stats-small-card">
+        <div class="stats-card-head">
+          <h3>${escapeHtml(title)}</h3>
+          ${confidencePill(confidence, confidence.indexOf("Needs") === 0 ? "warn" : confidence.indexOf("Estimated") === 0 ? "estimate" : "")}
+        </div>
+        <strong class="stats-medium-value">${escapeHtml(value)}</strong>
+        <p>${escapeHtml(caption)}</p>
+      </article>
+    `;
+  }
+
+  function confidencePill(label, tone) {
+    const extra = tone ? ` confidence-${escapeAttr(tone)}` : "";
+    return `<span class="confidence-pill${extra}">${escapeHtml(label)}</span>`;
+  }
+
+  function barChart(series, unit) {
+    if (!series.length) return `<div class="empty-note">No dated records available.</div>`;
+    const max = Math.max.apply(null, series.map(function (item) { return number(item.value); }));
+    if (!max) return `<div class="empty-note">No activity in this range.</div>`;
+    return `
+      <div class="stats-bar-chart" role="img" aria-label="${escapeAttr(unit)} by week">
+        ${series.map(function (item, index) {
+          const height = Math.max(6, Math.round((number(item.value) / max) * 100));
+          const active = index === series.length - 1 ? " is-current" : "";
+          return `
+            <div class="stats-bar-item${active}">
+              <span>${escapeHtml(formatChartValue(item.value, unit))}</span>
+              <i style="--bar-height: ${height}%"></i>
+              <em>${escapeHtml(item.label)}</em>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+
+  function rankedList(headers, rows) {
+    if (!rows.length) return `<div class="empty-note">No data available yet.</div>`;
+    return `
+      <div class="stats-ranked-list" role="table">
+        <div class="stats-ranked-row stats-ranked-head" role="row">
+          <span role="columnheader">${escapeHtml(headers[0])}</span>
+          <span role="columnheader">${escapeHtml(headers[1])}</span>
+        </div>
+        ${rows.slice(0, 6).map(function (row) {
+          return `
+            <div class="stats-ranked-row" role="row">
+              <strong role="cell">${escapeHtml(row.label)}</strong>
+              <span role="cell">${escapeHtml(row.value)}</span>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+
+  function statsBadgeGrid(badges) {
+    const groups = badgeGroups(badges);
+    if (!groups.length) return `<div class="empty-note">No badge data found in the imported files.</div>`;
+    return `
+      <div class="stats-badge-grid">
+        ${groups.slice(0, 36).map(function (group) {
+          const label = badgeLabel(group.badgeId);
+          return `
+            <div class="stats-badge-tile" title="${escapeAttr(clean(group.badgeId))}" aria-label="${escapeAttr(label.title)} badge${group.count > 1 ? `, earned ${group.count} times` : ""}">
+              <span class="stats-badge-icon" aria-hidden="true">${badgeIconSvg()}</span>
+              <strong>${escapeHtml(label.title)}</strong>
+              <em>${escapeHtml(group.count > 1 ? `Earned ${formatCount(group.count)} times` : group.earnedAt ? `Earned ${formatDate(group.earnedAt)}` : "Imported badge")}</em>
+            </div>
+          `;
+        }).join("")}
+      </div>
     `;
   }
 
@@ -2249,6 +2985,11 @@
     return `Unknown TV Time reaction (ID ${id})`;
   }
 
+  function ratingLabel(ratingId) {
+    const id = clean(ratingId);
+    return RATING_LABELS[id] || `Rating ID ${id}`;
+  }
+
   function titleItem(type, title) {
     if (!state.archive || !state.archive.data) return null;
     const key = canonicalTitleKey(title);
@@ -2334,16 +3075,415 @@
   }
 
   function buildSummary(data) {
-    const runtimeSeconds = data.watchHistory.reduce(function (sum, row) {
+    const episodeRecords = data.watchHistory.filter(function (row) {
+      return row.type !== "movie";
+    });
+    const movieRecords = data.watchHistory.filter(function (row) {
+      return row.type === "movie";
+    });
+    const detailedTvRuntimeSeconds = episodeRecords.reduce(function (sum, row) {
       return sum + number(row.runtimeSeconds);
     }, 0);
+    const detailedMovieRuntimeSeconds = movieRecords.reduce(function (sum, row) {
+      return sum + number(row.runtimeSeconds);
+    }, 0);
+    const aggregateTvRuntimeSeconds = number(data.stats && data.stats.total_series_runtime);
+    const aggregateMovieRuntimeSeconds = number(data.stats && data.stats.total_movies_runtime);
+    const tvRuntimeSeconds = aggregateTvRuntimeSeconds || detailedTvRuntimeSeconds;
+    const movieRuntimeSeconds = aggregateMovieRuntimeSeconds || detailedMovieRuntimeSeconds;
+    const runtimeSeconds = tvRuntimeSeconds + movieRuntimeSeconds;
+    const firstLog = firstWatchLog(data.watchHistory || []);
+    const lastLog = lastWatchLog(data.watchHistory || []);
     return {
       shows: data.shows.length,
       movies: data.movies.length,
-      watchRecords: data.watchHistory.length,
+      watchRecords: episodeRecords.length + movieRecords.length,
+      episodeRecords: episodeRecords.length,
+      movieRecords: movieRecords.length,
       badges: data.badges.length,
-      runtimeSeconds
+      runtimeSeconds,
+      tvRuntimeSeconds,
+      movieRuntimeSeconds,
+      detailedTvRuntimeSeconds,
+      detailedMovieRuntimeSeconds,
+      tvRuntimeSource: aggregateTvRuntimeSeconds ? "aggregate" : "detailed",
+      movieRuntimeSource: aggregateMovieRuntimeSeconds ? "aggregate" : "detailed",
+      tvRuntimeSourceLabel: aggregateTvRuntimeSeconds ? "From TV Time aggregate" : "Calculated from detailed logs",
+      movieRuntimeSourceLabel: aggregateMovieRuntimeSeconds ? "From TV Time aggregate" : "Calculated from detailed logs",
+      tvRuntimeConfidence: aggregateTvRuntimeSeconds ? "From TV Time aggregate" : "Calculated from detailed logs",
+      movieRuntimeConfidence: aggregateMovieRuntimeSeconds ? "From TV Time aggregate" : "Calculated from detailed logs",
+      firstTrackedAt: firstLog ? firstLog.watchedAt : "",
+      lastTrackedAt: lastLog ? lastLog.watchedAt : ""
     };
+  }
+
+  function statsTimeline(data, summary) {
+    const firstLog = firstWatchLog(data.watchHistory || []);
+    const lastLog = lastWatchLog(data.watchHistory || []);
+    return {
+      accountCreatedAt: data.stats && data.stats.created_at,
+      firstLog,
+      lastLog,
+      hasAggregateBeforeDetails: Boolean((summary.tvRuntimeSource === "aggregate" || summary.movieRuntimeSource === "aggregate") && firstLog)
+    };
+  }
+
+  async function refreshStatsMetadata() {
+    if (!state.archive || state.statsRefreshInProgress) return;
+    state.statsRefreshInProgress = true;
+    render();
+    const showItems = (state.archive.data.shows || []).filter(function (item) {
+      const meta = state.archive.metadata.shows[item.metadataKey] || {};
+      return !number(meta.episodeCount);
+    }).slice(0, STATS_METADATA_BATCH_SIZE);
+    const movieItems = (state.archive.data.movies || []).filter(function (item) {
+      const meta = state.archive.metadata.movies[item.metadataKey] || {};
+      return !(Array.isArray(meta.genres) && meta.genres.length) && !number(meta.runtimeSeconds);
+    }).slice(0, STATS_METADATA_BATCH_SIZE);
+    const items = showItems.map(function (item) {
+      return { kind: "shows", item };
+    }).concat(movieItems.map(function (item) {
+      return { kind: "movies", item };
+    }));
+    if (!items.length) {
+      showStatus("Stats metadata checked", "All currently known stats metadata is already cached.", 100);
+      state.statsRefreshInProgress = false;
+      render();
+      setTimeout(hideStatus, 1600);
+      return;
+    }
+    let updated = 0;
+    try {
+      for (let i = 0; i < items.length; i += 1) {
+        const entry = items[i];
+        showStatus("Refreshing stats metadata", `${entry.item.title} (${i + 1} of ${items.length})`, Math.round((i / Math.max(items.length, 1)) * 100));
+        try {
+          const result = await fetchStatsMetadata(entry.item, entry.kind);
+          if (result) {
+            state.archive.metadata[entry.kind][entry.item.metadataKey] = result;
+            updated += 1;
+          }
+        } catch (error) {
+          console.warn("Stats metadata lookup failed.", error);
+        }
+        if (i < items.length - 1) await wait(entry.kind === "movies" ? 650 : 450);
+      }
+      state.archive.metadata.fetchedAt = new Date().toISOString();
+      finalizeArchive(state.archive);
+      await rememberArchiveBestEffort(state.archive);
+      showStatus("Stats metadata updated", `${updated} titles were enhanced. Run again to continue through the library.`, 100);
+      setTimeout(hideStatus, 2400);
+    } finally {
+      state.statsRefreshInProgress = false;
+      render();
+    }
+  }
+
+  function sumBy(items, field) {
+    return (items || []).reduce(function (sum, item) {
+      return sum + number(item[field]);
+    }, 0);
+  }
+
+  function recentRows(rows, days) {
+    const max = maxHistoryDate(rows);
+    if (!max) return [];
+    const start = addDays(max, -days);
+    return rows.filter(function (row) {
+      const date = parseDate(row.watchedAt || row.createdAt);
+      return date && date >= start && date <= max;
+    });
+  }
+
+  function weeklySeries(rows, valueFn, weeks) {
+    const max = maxHistoryDate(rows) || new Date();
+    const start = startOfWeek(addDays(max, -7 * (weeks - 1)));
+    const buckets = [];
+    for (let i = 0; i < weeks; i += 1) {
+      const date = addDays(start, i * 7);
+      buckets.push({
+        key: weekKey(date),
+        label: shortDateLabel(date),
+        value: 0
+      });
+    }
+    rows.forEach(function (row) {
+      const date = parseDate(row.watchedAt || row.createdAt);
+      if (!date) return;
+      const key = weekKey(startOfWeek(date));
+      const bucket = buckets.find(function (item) { return item.key === key; });
+      if (bucket) bucket.value += number(valueFn(row));
+    });
+    return buckets;
+  }
+
+  function marathonRows(rows) {
+    const groups = new Map();
+    rows.forEach(function (row) {
+      const date = row.watchedAt ? String(row.watchedAt).slice(0, 10) : "";
+      if (!date) return;
+      const key = `${date}:${canonicalTitleKey(row.title)}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          label: row.title,
+          count: 0,
+          runtimeSeconds: 0,
+          date
+        });
+      }
+      const group = groups.get(key);
+      group.count += 1;
+      group.runtimeSeconds += number(row.runtimeSeconds);
+    });
+    return Array.from(groups.values()).sort(function (a, b) {
+      return b.count - a.count || b.runtimeSeconds - a.runtimeSeconds;
+    }).slice(0, 6).map(function (group) {
+      return {
+        label: group.label,
+        value: `${formatCount(group.count)} / ${formatRuntime(group.runtimeSeconds)}`
+      };
+    });
+  }
+
+  function ratingRankRows(ratings) {
+    const groups = new Map();
+    ratings.forEach(function (item) {
+      const key = canonicalTitleKey(item.title);
+      if (!groups.has(key)) groups.set(key, { label: item.title, total: 0, ratings: {} });
+      const group = groups.get(key);
+      group.total += 1;
+      const label = ratingLabel(item.ratingId);
+      group.ratings[label] = (group.ratings[label] || 0) + 1;
+    });
+    return Array.from(groups.values()).sort(function (a, b) {
+      return b.total - a.total || a.label.localeCompare(b.label);
+    }).slice(0, 6).map(function (group) {
+      const top = Object.entries(group.ratings).sort(function (a, b) { return b[1] - a[1]; })[0];
+      return {
+        label: group.label,
+        value: top ? `${top[0]} (x${formatCount(top[1])})` : formatCount(group.total)
+      };
+    });
+  }
+
+  function characterVoteRows(votes) {
+    const groups = new Map();
+    votes.forEach(function (item) {
+      const key = canonicalTitleKey(item.showTitle || item.title);
+      if (!groups.has(key)) groups.set(key, { label: item.showTitle || item.title, count: 0 });
+      groups.get(key).count += 1;
+    });
+    return Array.from(groups.values()).sort(function (a, b) {
+      return b.count - a.count || a.label.localeCompare(b.label);
+    }).slice(0, 6).map(function (group) {
+      return { label: group.label, value: formatCount(group.count) };
+    });
+  }
+
+  function rankedMetadataValues(items, kind) {
+    const counts = new Map();
+    items.forEach(function (entry) {
+      const meta = entry.meta || {};
+      let values = [];
+      if (kind === "genres") values = Array.isArray(meta.genres) ? meta.genres : [];
+      if (kind === "network") values = [meta.networkName || meta.webChannelName || meta.network || ""];
+      if (kind === "platform") values = Array.isArray(meta.platforms) ? meta.platforms : [meta.provider || ""];
+      values.filter(Boolean).forEach(function (value) {
+        const label = clean(value);
+        counts.set(label, (counts.get(label) || 0) + 1);
+      });
+    });
+    return Array.from(counts.entries()).sort(function (a, b) {
+      return b[1] - a[1] || a[0].localeCompare(b[0]);
+    }).slice(0, 6).map(function (entry) {
+      return { label: entry[0], value: formatCount(entry[1]) };
+    });
+  }
+
+  function remainingShowEpisodes(shows, metadata, rows) {
+    const watchedByShow = rows.reduce(function (map, row) {
+      const key = canonicalTitleKey(row.title);
+      map[key] = (map[key] || 0) + 1;
+      return map;
+    }, {});
+    let count = 0;
+    let runtimeSeconds = 0;
+    let sourceCount = 0;
+    shows.forEach(function (show) {
+      const meta = metadata[show.metadataKey] || {};
+      const total = number(meta.episodeCount);
+      if (!total) return;
+      const watched = watchedByShow[canonicalTitleKey(show.title)] || number(show.watchedEpisodes);
+      const remaining = Math.max(0, total - watched);
+      const runtime = number(meta.averageRuntime) ? number(meta.averageRuntime) * 60 : 0;
+      count += remaining;
+      runtimeSeconds += remaining * runtime;
+      sourceCount += 1;
+    });
+    return { count, runtimeSeconds, sourceCount };
+  }
+
+  function remainingMovieRuntime(movies, metadata) {
+    let count = 0;
+    let runtimeSeconds = 0;
+    let sourceCount = 0;
+    movies.forEach(function (movie) {
+      if (!movie.forLater) return;
+      count += 1;
+      const meta = metadata[movie.metadataKey] || {};
+      const runtime = number(meta.runtimeSeconds) || number(movie.runtimeSeconds);
+      if (runtime) {
+        runtimeSeconds += runtime;
+        sourceCount += 1;
+      }
+    });
+    return { count, runtimeSeconds, sourceCount };
+  }
+
+  function hasStatsMetadata(metadata) {
+    if (!metadata) return false;
+    return hasPoster(metadata)
+      || (Array.isArray(metadata.genres) && metadata.genres.length > 0)
+      || number(metadata.episodeCount) > 0
+      || number(metadata.runtimeSeconds) > 0
+      || Boolean(metadata.networkName || metadata.webChannelName || metadata.provider);
+  }
+
+  function uniqueTitleCount(items) {
+    const keys = new Set();
+    (items || []).forEach(function (item) {
+      if (item.title) keys.add(canonicalTitleKey(item.title));
+    });
+    return keys.size;
+  }
+
+  function formatDurationParts(seconds) {
+    const total = number(seconds);
+    const months = Math.floor(total / (86400 * 30));
+    const days = Math.floor((total % (86400 * 30)) / 86400);
+    const hours = Math.floor((total % 86400) / 3600);
+    if (months) return `${formatCount(months)}mo ${formatCount(days)}d ${formatCount(hours)}h`;
+    if (days) return `${formatCount(days)}d ${formatCount(hours)}h`;
+    return `${formatCount(Math.floor(total / 3600))}h`;
+  }
+
+  function formatChartValue(value, unit) {
+    if (unit === "hours") return formatDecimal(value);
+    return formatCount(Math.round(number(value)));
+  }
+
+  function formatDecimal(value) {
+    const rounded = Math.round(number(value) * 10) / 10;
+    return rounded.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  }
+
+  function firstWatchLog(rows) {
+    return (rows || []).filter(function (row) {
+      return row.watchedAt;
+    }).sort(function (a, b) {
+      return String(a.watchedAt || "").localeCompare(String(b.watchedAt || ""));
+    })[0] || null;
+  }
+
+  function lastWatchLog(rows) {
+    return (rows || []).filter(function (row) {
+      return row.watchedAt;
+    }).sort(function (a, b) {
+      return String(b.watchedAt || "").localeCompare(String(a.watchedAt || ""));
+    })[0] || null;
+  }
+
+  function watchLogLabel(row) {
+    if (!row) return "";
+    if (row.type === "movie") return `${row.title} / movie`;
+    const context = memoryContext({
+      type: "episode",
+      seasonNumber: row.seasonNumber,
+      episodeNumber: row.episodeNumber
+    });
+    return `${row.title} / ${context}`;
+  }
+
+  function badgeGroups(badges) {
+    const groups = new Map();
+    (badges || []).forEach(function (badge) {
+      const key = clean(badge.badgeId) || "unknown";
+      if (!groups.has(key)) {
+        groups.set(key, {
+          badgeId: key,
+          count: 0,
+          earnedAt: badge.createdAt || badge.updatedAt || ""
+        });
+      }
+      const group = groups.get(key);
+      group.count += 1;
+      group.earnedAt = earliest(group.earnedAt, badge.createdAt || badge.updatedAt || "");
+    });
+    return Array.from(groups.values()).sort(function (a, b) {
+      return badgeLabel(a.badgeId).title.localeCompare(badgeLabel(b.badgeId).title) || String(a.earnedAt || "").localeCompare(String(b.earnedAt || ""));
+    });
+  }
+
+  function badgeLabel(badgeId) {
+    const raw = clean(badgeId);
+    const withoutIds = raw
+      .replace(/^\d+[_\s-]*/, "")
+      .replace(/\b\d{3,}\b/g, "")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const lower = withoutIds.toLowerCase();
+    let title = "";
+    if (lower.includes("quick watcher")) title = "Quick watcher";
+    if (lower.includes("marathoner")) title = "Marathoner";
+    if (lower.includes("watcher") && !title) title = "Watcher";
+    if (lower.includes("comment")) title = "Comment badge";
+    if (lower.includes("rating") || lower.includes("vote")) title = "Vote badge";
+    if (lower.includes("movie")) title = "Movie badge";
+    if (lower.includes("episode")) title = "Episode badge";
+    if (!title && withoutIds) {
+      title = withoutIds.replace(/\b\w/g, function (letter) {
+        return letter.toUpperCase();
+      }).split(" ").slice(0, 3).join(" ");
+    }
+    return {
+      title: title || "Imported badge"
+    };
+  }
+
+  function badgeIconSvg() {
+    return `
+      <svg viewBox="0 0 48 48" focusable="false" aria-hidden="true">
+        <path d="M24 4 38 10v12c0 10-5.8 17.2-14 22C15.8 39.2 10 32 10 22V10l14-6Z"></path>
+        <path d="m17 24 5 5 10-12"></path>
+      </svg>
+    `;
+  }
+
+  function startOfWeek(date) {
+    const next = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const day = next.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    next.setDate(next.getDate() + diff);
+    return next;
+  }
+
+  function weekKey(date) {
+    return isoDate(date);
+  }
+
+  function shortDateLabel(date) {
+    return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  function addDays(date, days) {
+    const next = new Date(date.getTime());
+    next.setDate(next.getDate() + days);
+    return next;
+  }
+
+  function isoDate(date) {
+    return date.toISOString().slice(0, 10);
   }
 
   function filteredShows() {
@@ -2379,6 +3519,7 @@
   }
 
   function setRoute(route) {
+    if (!els.views[route]) route = "dashboard";
     state.route = route;
     render();
   }
@@ -2410,7 +3551,7 @@
       els.appView.hidden = true;
       els.emptyState.hidden = false;
       document.body.classList.add("is-empty");
-      showStatus("Reimport needed", "The local library was created with an older importer. Choose your GDPR ZIP again to remap watch history and watch-later items correctly.", 100);
+      showStatus("Reimport needed", "The local library was created with an older importer. Choose your GDPR ZIP again to add ratings, character votes, badges, and stats cache data.", 100);
       return;
     }
     state.archive = finalizeArchive(archive);
@@ -2670,6 +3811,11 @@
   function formatWatchTimeHours(seconds) {
     const hours = Math.floor(number(seconds) / 3600);
     return `${hours.toLocaleString()} hours`;
+  }
+
+  function formatWatchTimeDays(seconds) {
+    const days = Math.floor(number(seconds) / 86400);
+    return `${days.toLocaleString()} ${days === 1 ? "day" : "days"} watched`;
   }
 
   function formatWatchTimeDetail(seconds) {

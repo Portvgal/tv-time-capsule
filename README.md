@@ -3,8 +3,8 @@
 TV Time Capsule is a private, no-install viewer for TV Time GDPR exports.
 
 Open the app in your browser, choose your TV Time GDPR ZIP, and browse your
-shows, movies, watch history, posters, and watch-later items locally. The app
-does not upload your TV Time export.
+shows, movies, watch history, posters, watch-later items, and aggregate stats
+locally. The app does not upload your TV Time export.
 
 ## Screenshots
 
@@ -59,7 +59,7 @@ GDPR export.
 3. Open `TVTimeCapsule.html` in your browser.
 4. Choose your TV Time GDPR ZIP file.
 5. Wait for the import to finish.
-6. Use the Dashboard, History, and Settings views.
+6. Use the Dashboard, History, Stats, and Settings views.
 
 After import, TV Time Capsule saves a cleaned local library in your browser. The
 next time you open `TVTimeCapsule.html`, it should open automatically.
@@ -73,6 +73,8 @@ update, choose the original TV Time GDPR ZIP again.
 - watched episodes and watched movies
 - watch-later items where TV Time included them
 - show/movie posters where metadata providers have a match
+- aggregate Stats panels for watch time, weekly activity, ratings, comments,
+  likes, badges, genres, networks/platforms, and catch-up estimates
 - history grouped by show/movie and date range
 - watched show episodes grouped by season
 - comments and reaction memories where TV Time included them in the export
@@ -90,6 +92,33 @@ where known, and unknown reaction IDs are shown plainly instead of guessed.
 This improves browsing your archive, but it is not a full community migration:
 likes, discussion context, GIFs, translations, and complete social threads may
 still be missing or incomplete depending on what TV Time exported.
+
+## Update Warning: Stats Data
+
+The Stats view imports additional safe GDPR files when present, including
+ratings, character votes, badge records, cached stats, and timeframe count files.
+Because this changes the cleaned local archive shape, older browser-saved
+libraries must be rebuilt by importing the original GDPR ZIP again.
+
+Stats now separates account history from watch-time duration. The Tracking
+timeline shows when the account/export data begins, plus the first and last
+detailed watch logs found in the GDPR export. Watch-time cards show hours and
+days watched, not calendar months.
+
+When TV Time includes all-time aggregate runtime totals, TV Time Capsule prefers
+those values over summing detailed rows. This keeps Dashboard and Stats aligned
+and avoids under-counting exports where older viewing activity exists only as
+aggregate totals.
+
+Stats panels label their source quality. Core totals come from the GDPR export.
+Genres, networks/platforms, remaining episodes, and future watch-time estimates
+depend on cached or refreshed TVmaze, Cinemeta/Stremio, iTunes, or optional TMDb
+metadata. Social comparison is not included because the GDPR export does not
+contain followed-user aggregate stats.
+
+Badge tiles are simplified because TV Time badge artwork is not part of the GDPR
+export. Duplicate badge IDs are grouped, raw badge codes are hidden from the
+visible UI, and generic local badge icons are shown instead.
 
 ## What You Cannot Fully Migrate
 
@@ -124,12 +153,16 @@ The app shows a skipped-file report after import.
 
 ## Metadata and Images
 
-TV Time exports do not include poster images. TV Time Capsule uses TVmaze to
-look up show posters and Cinemeta/Stremio to look up movie posters when an
-internet connection is available.
+TV Time exports do not include poster images or complete provider catalogues. TV
+Time Capsule uses TVmaze to look up show posters and show metadata, and
+Cinemeta/Stremio to look up movie posters when an internet connection is
+available.
 
 The Dashboard includes poster refresh buttons for retrying missing images. Movie
 poster refreshes run in small batches and continue through the current filter.
+The Stats view has a separate metadata refresh action for filling enhanced
+analytics such as show networks, episode counts, genres, and remaining watch
+time. Those lookups are cached in the browser-local archive.
 
 For better fallback coverage, Settings supports an optional free TMDb API key.
 When a show has no TVmaze poster, or when movie posters need a stronger source,
@@ -137,9 +170,11 @@ TV Time Capsule can try TMDb as a backup image source.
 
 Metadata/image attribution:
 
-- show metadata and images can come from [TVmaze](https://www.tvmaze.com/)
+- show metadata, images, network names, and episode counts can come from
+  [TVmaze](https://www.tvmaze.com/)
 - movie posters can come from Cinemeta/Stremio
-- optional fallback images can come from [TMDb](https://www.themoviedb.org/)
+- optional fallback images and genre metadata can come from
+  [TMDb](https://www.themoviedb.org/)
 
 ## Local Browser Data
 
@@ -175,6 +210,9 @@ Vendored browser libraries:
 - Poster image binaries are not embedded in the local library. The app stores
   safe metadata and image URLs.
 - Full unwatched episode lists require provider metadata and are not complete in
-  v1. The History modal currently shows watched episodes from the TV Time export.
+  v1. Stats estimates remaining episodes only when provider episode counts are
+  available.
 - If metadata providers are offline or cannot match a title, the app shows a
   clean placeholder.
+- Stats badge tiles are local stylized labels based on imported badge IDs, not
+  official TV Time artwork.
