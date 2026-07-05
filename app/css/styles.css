@@ -549,20 +549,30 @@ progress {
 }
 
 .stats-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   padding: 16px;
 }
 
 .stats-card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: start;
-  margin-bottom: 14px;
+  display: block;
 }
 
 .stats-card h3 {
   margin: 0;
   font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.stats-card p {
+  margin: 0;
+}
+
+.stats-card-foot {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: auto;
 }
 
 .stats-big-value,

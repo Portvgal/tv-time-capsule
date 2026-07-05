@@ -2205,10 +2205,10 @@
       <article class="stats-card">
         <div class="stats-card-head">
           <h3>${escapeHtml(title)}</h3>
-          ${confidencePill(confidence, confidence.indexOf("Needs") === 0 ? "warn" : "")}
         </div>
         <strong class="stats-big-value">${escapeHtml(value)}</strong>
         <p>${escapeHtml(caption)}</p>
+        ${statsCardConfidence(confidence)}
       </article>
     `;
   }
@@ -2218,22 +2218,21 @@
       <article class="stats-card">
         <div class="stats-card-head">
           <h3>${escapeHtml(title)}</h3>
-          ${confidencePill(confidence)}
         </div>
         ${barChart(series, unit)}
+        ${statsCardConfidence(confidence)}
       </article>
     `;
   }
 
   function statsRankCard(title, rows, headers, confidence) {
-    const warn = confidence.indexOf("Needs") === 0 ? "warn" : "";
     return `
       <article class="stats-card">
         <div class="stats-card-head">
           <h3>${escapeHtml(title)}</h3>
-          ${confidencePill(confidence, warn)}
         </div>
         ${rankedList(headers, rows)}
+        ${statsCardConfidence(confidence)}
       </article>
     `;
   }
@@ -2295,12 +2294,17 @@
       <article class="stats-card stats-small-card">
         <div class="stats-card-head">
           <h3>${escapeHtml(title)}</h3>
-          ${confidencePill(confidence, confidence.indexOf("Needs") === 0 ? "warn" : confidence.indexOf("Estimated") === 0 ? "estimate" : "")}
         </div>
         <strong class="stats-medium-value">${escapeHtml(value)}</strong>
         <p>${escapeHtml(caption)}</p>
+        ${statsCardConfidence(confidence)}
       </article>
     `;
+  }
+
+  function statsCardConfidence(confidence) {
+    const tone = confidence.indexOf("Needs") === 0 ? "warn" : confidence.indexOf("Estimated") === 0 ? "estimate" : "";
+    return `<div class="stats-card-foot">${confidencePill(confidence, tone)}</div>`;
   }
 
   function confidencePill(label, tone) {
